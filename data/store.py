@@ -147,9 +147,11 @@ def _sum_from_payloads(
 
 def _monthly_totals_from_payloads(
     payloads: list[dict[str, Any]], today: date
-) -> tuple[int, Decimal, list[dict[str, Any]]]:
+) -> tuple[int | None, Decimal | None, list[dict[str, Any]]]:
     month_tokens = 0
     month_cost = Decimal("0")
+    found_tokens = False
+    found_cost = False
     models: dict[str, dict[str, Any]] = {}
     for payload in payloads:
         days = payload.get("days", [])
@@ -179,8 +181,10 @@ def _monthly_totals_from_payloads(
                     usage_type = str(usage.get("type", ""))
                     if usage_type == "cost_cny":
                         month_cost += amount
+                        found_cost = True
                     elif usage_type in TOKEN_TYPES:
                         month_tokens += int(amount)
+                        found_tokens = True
                     else:
                         continue
                     slot["usage"].append(copy.deepcopy(usage))
@@ -193,7 +197,11 @@ def _monthly_totals_from_payloads(
         ),
         reverse=True,
     )
-    return month_tokens, month_cost, per_model
+    return (
+        month_tokens if found_tokens else None,
+        month_cost if found_cost else None,
+        per_model,
+    )
 
 
 def token_breakdown_for_day(
@@ -561,9 +569,11 @@ class TokenData:
                 month_tokens, month_cost, per_model = _monthly_totals_from_payloads(
                     payloads, current_day
                 )
-                if per.monthly_usage_tokens is None:
+                # 当前月日明细与今日/周统计同源；摘要接口偶尔会返回占位 0，
+                # 因此仅要明细中确实包含该指标，就用逐日累计覆盖摘要值。
+                if month_tokens is not None:
                     per.monthly_usage_tokens = month_tokens
-                if per.monthly_cost_cny is None:
+                if month_cost is not None:
                     per.monthly_cost_cny = float(month_cost)
                 per.per_model = per_model
                 successes += 1

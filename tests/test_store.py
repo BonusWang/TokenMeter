@@ -151,6 +151,21 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(data.total_cost_cny, 1.25)
         self.assertEqual(data.status, "ok")
 
+    def test_current_month_details_override_zero_summary_placeholders(self):
+        class ZeroSummaryProvider(FakeProvider):
+            def fetch_summary(self):
+                return ProviderSummary(Decimal("0"), 0), None
+
+        provider = ZeroSummaryProvider(payloads=[
+            payload("2026-07-01", 20, ".2"),
+            payload("2026-07-03", 30, ".23"),
+        ])
+
+        data = self.fetch_with(provider)
+
+        self.assertEqual(data.monthly_usage_tokens, 50)
+        self.assertAlmostEqual(data.monthly_cost_cny, .43)
+
     def test_lightweight_mimo_fetch_only_requests_current_month(self):
         provider = FakeProvider(payloads=[payload("2026-07-03", 30, ".23")])
         provider.id = "mimo"
