@@ -56,15 +56,17 @@ def safe_int(value: Any) -> int:
         return 0
 
 
-def build_session() -> requests.Session:
+def build_session(*, retry_post: bool = False) -> requests.Session:
     session = requests.Session()
+    retry_methods = {"GET", "POST"} if retry_post else {"GET"}
     retry = Retry(
         total=3,
         connect=2,
         read=2,
         backoff_factor=0.5,
         status_forcelist=(502, 503, 504),
-        allowed_methods=frozenset({"GET", "POST"}),
+        # 基础会话默认只重试幂等读取；只有明确的只读 POST 可由 Provider 单独启用。
+        allowed_methods=frozenset(retry_methods),
         respect_retry_after_header=False,
         raise_on_status=False,
     )

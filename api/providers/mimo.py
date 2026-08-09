@@ -25,7 +25,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import (
+    parse_qsl,
+    urlencode,
+    unquote,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 import requests
 
@@ -113,7 +120,8 @@ class MiMoProvider(Provider):
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         super().__init__(config)
-        self._session = build_session()
+        # MiMo 唯一的 POST 是月度用量明细查询，不修改账户状态，可安全保留瞬时失败重试。
+        self._session = build_session(retry_post=True)
         self._browser_cookie = ""
         self._browser_api_platform_ph = ""
 
@@ -548,7 +556,15 @@ class MiMoProvider(Provider):
         value = ph.strip().strip('"').strip()
         if not value:
             return url
-        return f"{url}{'&' if '?' in url else '?'}api-platform_ph={value}"
+        parsed = urlsplit(url)
+        query = [
+            (name, item)
+            for name, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if name != "api-platform_ph"
+        ]
+        # 浏览器复制值可能已经包含 %XX；先解码再统一编码，可阻止 &, # 等字符改写查询结构。
+        query.append(("api-platform_ph", unquote(value)))
+        return urlunsplit(parsed._replace(query=urlencode(query)))
 
     @classmethod
     def _check_browser_response(cls, status_code: int, payload: Any) -> Any:
@@ -739,22 +755,11 @@ class MiMoProvider(Provider):
         }
 
     def _url(self, path: str) -> str:
-        """构造完整 URL，并在末尾附加 ``api-platform_ph``。
-
-        ``ph`` 直接作为原始查询串附加，避免对用户从浏览器复制的百分
-        比编码（如 ``%2F``）被二次编码；但会去掉外层双引号，防止
-        拼到 URL 上时把 ``"`` 带进去导致 404。
-        """
+        """构造完整 URL，并安全附加 ``api-platform_ph``。"""
         base = self._base_url()
         url = f"{base}{path}"
         ph = self._api_platform_ph_value()
-        if ph:
-            # 去引号并修剪空白，防止 URL 出现 "%22" 或空格导致 404。
-            ph = ph.strip().strip('"').strip()
-        if ph:
-            sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}api-platform_ph={ph}"
-        return url
+        return self._append_ph(url, ph)
 
     def _get(self, path: str) -> Any:
         if not self.is_configured():

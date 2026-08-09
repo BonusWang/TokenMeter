@@ -52,6 +52,7 @@ git clone https://github.com/zensoku142/TokenMeter.git
 cd TokenMeter
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade "pip>=26.1.2"
 python -m pip install -r requirements.txt
 python main.py
 ```
@@ -115,7 +116,7 @@ TokenMeter/
 
 ## バージョンと Release
 
-現在のバージョン：`1.10.5`。変更履歴とチェックサムは [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases) を参照してください。
+現在のバージョン：`1.10.6`。変更履歴とチェックサムは [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases) を参照してください。
 
 ## License
 

@@ -1642,6 +1642,10 @@ class MainPanel(QFrame):
         self._minute_usage_days: list[str] = []
         self._minute_selected_date = ""
         self._minute_follows_latest = True
+        self._daily_usage_by_date: dict[str, dict] = {}
+        self._today_cost_cny: float | None = None
+        self._today_tokens: int | None = None
+        self._usage_card_loading = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(1, 1, 1, 1)
@@ -1967,6 +1971,35 @@ class MainPanel(QFrame):
         self._minute_follows_latest = selected_date == self._minute_current_date
         self._render_minute_date(loading=False)
 
+    def _render_usage_card(self) -> None:
+        selected_date = self._minute_selected_date
+        show_selected_date = (
+            self._activity_view == "minute"
+            and selected_date
+            and selected_date != self._minute_current_date
+        )
+        if show_selected_date:
+            selected = QDate.fromString(selected_date, "yyyy-MM-dd")
+            row = self._daily_usage_by_date.get(selected_date, {})
+            self.today_card.set_title(
+                selected.toString("M月d日使用金额")
+                if selected.isValid()
+                else "所选日期使用金额"
+            )
+            cost = row.get("cost_cny")
+            token_count = row.get("tokens")
+        else:
+            self.today_card.set_title("今日使用金额")
+            cost = self._today_cost_cny
+            token_count = self._today_tokens
+        self.today_card.set_values(
+            "--" if self._usage_card_loading else format_money(cost),
+            "--"
+            if self._usage_card_loading or token_count is None
+            else compact_tokens(int(token_count)),
+            "",
+        )
+
     def _update_minute_data(self, data: TokenData, loading: bool) -> None:
         previous_current_date = self._minute_current_date
         was_following_latest = (
@@ -2113,6 +2146,7 @@ class MainPanel(QFrame):
             if self._activity_view == "minute"
             else self._annual_activity_summary
         )
+        self._render_usage_card()
 
     def _set_activity_view(self, view: str) -> None:
         minute_view = view == "minute"
@@ -2138,6 +2172,7 @@ class MainPanel(QFrame):
             if minute_view
             else self._annual_activity_summary
         )
+        self._render_usage_card()
         self.activity_card.layout().invalidate()
         self._refresh_minute_control_colors()
         self._update_activity_header_visibility()
@@ -2285,10 +2320,14 @@ class MainPanel(QFrame):
             provider_name = data.per_provider[0].provider_name
             self._provider_label.setText(f" · {provider_name}")
 
-        self.today_card.set_title("今日使用金额")
+        self._usage_card_loading = loading
+        self._today_cost_cny = data.today_cost_cny
+        self._today_tokens = data.today_tokens
+        self._daily_usage_by_date = {
+            str(row.get("date")): row for row in data.daily_usage if row.get("date")
+        }
         self.balance_card.set_title("账户余额")
         self.month_card.set_title("本月累计")
-        self.today_card.set_values(money(data.today_cost_cny), tokens(data.today_tokens), "")
         self.balance_card.set_values(
             money(data.balance_cny),
             f"约 {tokens(data.balance_tokens)}" if data.balance_tokens else "账户可用余额",

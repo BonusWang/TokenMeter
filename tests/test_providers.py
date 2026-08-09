@@ -3,13 +3,15 @@ import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, unquote, urlsplit
 
 os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 
+import config_manager
 from api.deepseek import APIError
+from api.providers.base import build_session
 from api.providers.deepseek import DeepSeekProvider
 from api.providers.mimo import MiMoProvider
-import config_manager
 
 
 def response(payload, status=200):
@@ -21,6 +23,23 @@ def response(payload, status=200):
 
 
 class MiMoProviderTests(unittest.TestCase):
+    def test_base_session_retries_only_idempotent_get_requests(self):
+        session = build_session()
+        read_only_post_session = build_session(retry_post=True)
+        try:
+            retry = session.get_adapter("https://").max_retries
+            self.assertEqual(retry.allowed_methods, frozenset({"GET"}))
+            self.assertTrue(retry.is_retry("GET", 503))
+            self.assertFalse(retry.is_retry("POST", 503))
+            self.assertTrue(
+                read_only_post_session.get_adapter("https://").max_retries.is_retry(
+                    "POST", 503
+                )
+            )
+        finally:
+            session.close()
+            read_only_post_session.close()
+
     def config(self, key, default=None):
         return {
             "MIMO_COOKIE": "api-platform_serviceToken=test; userId=1",
@@ -370,7 +389,8 @@ class DeepSeekProviderTests(unittest.TestCase):
         # 注入后的 cookie 中应包含 ``api-platform_ph``
         self.assertIn("api-platform_ph=", headers["cookie"])
         # URL 同样会带上 ph
-        self.assertIn("api-platform_ph=" + ph, provider._url("/api/v1/usage"))
+        query = parse_qs(urlsplit(provider._url("/api/v1/usage")).query)
+        self.assertEqual(query["api-platform_ph"], [ph])
 
     def test_cookie_normalization_squeezes_whitespace(self):
         raw = "a=1;\n b=2;\nc=3"
@@ -530,10 +550,7 @@ class DeepSeekProviderTests(unittest.TestCase):
         self.assertNotIn("_ga=", got)
         self.assertNotIn("other_session=", got)
 
-    def test_url_strips_quotes_from_api_platform_ph(self) -> None:
-        """``_url`` 拼接 ``api-platform_ph`` 前应去掉外层引号，防止
-        query 里出现 ``"`` 字符导致 404。
-        """
+    def test_url_safely_encodes_api_platform_ph(self) -> None:
         provider = MiMoProvider()
 
         class _ConfigCache(dict):
@@ -549,9 +566,23 @@ class DeepSeekProviderTests(unittest.TestCase):
         finally:
             config_manager.get = original  # type: ignore[method-assign]
         self.assertTrue(url.startswith("https://platform.xiaomimimo.com/api/v1/balance?api-platform_ph="))
-        # 不能出现双引号；原本的 "/" 和 "=" 必须保留。
+        # 已编码值先统一解码再编码，既不重复转义，也不会把保留字符留在查询结构中。
         self.assertNotIn('"', url)
-        self.assertIn("xx/yy==zz", url)
+        self.assertIn("xx%2Fyy%3D%3Dzz", url)
+
+    def test_append_ph_preserves_query_and_encodes_reserved_characters(self) -> None:
+        values = ("plain", "a b", "中文", "a&b", "a#b", "a%b", "a%2Fb")
+        for value in values:
+            with self.subTest(value=value):
+                url = MiMoProvider._append_ph(
+                    "https://platform.xiaomimimo.com/api?keep=1#result",
+                    value,
+                )
+                parsed = urlsplit(url)
+                query = parse_qs(parsed.query)
+                self.assertEqual(query["keep"], ["1"])
+                self.assertEqual(query["api-platform_ph"], [unquote(value)])
+                self.assertEqual(parsed.fragment, "result")
 
 
 if __name__ == "__main__":

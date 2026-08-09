@@ -858,6 +858,53 @@ def test_minute_date_selection_uses_only_dates_reported_with_data():
     panel.close()
 
 
+def test_minute_date_selection_updates_top_usage_card():
+    panel = MainPanel()
+    data = sample_data()
+    data.today_cost_cny = 0.34
+    data.today_tokens = 200_000
+    data.daily_usage = [
+        {"date": "2026-07-13", "tokens": 100_000, "cost_cny": Decimal("0.12")},
+        {"date": "2026-07-14", "tokens": 200_000, "cost_cny": Decimal("0.34")},
+    ]
+    data.minute_usage_date = "2026-07-14"
+    data.minute_usage_status = "recorded"
+    data.minute_usage = [
+        {"minute": 10, "token_type": "RESPONSE_TOKEN", "token_amount": 20}
+    ]
+    data.minute_usage_days = ["2026-07-13", "2026-07-14"]
+    data.minute_usage_history = {
+        "2026-07-13": [
+            {"minute": 10, "token_type": "RESPONSE_TOKEN", "token_amount": 10}
+        ]
+    }
+
+    with patch(
+        "ui.qt_panel.config_manager.get",
+        side_effect=lambda key, default=None: (
+            3 if key == "MINUTE_USAGE_RETENTION_DAYS" else default
+        ),
+    ):
+        panel.update_data(data)
+        panel.minute_activity_button.click()
+        assert panel.today_card.title_label.text() == "今日使用金额"
+        assert panel.today_card.value.text() == "¥0.34"
+
+        panel.minute_previous_button.click()
+        assert panel.today_card.title_label.text() == "7月13日使用金额"
+        assert panel.today_card.value.text() == "¥0.12"
+        assert panel.today_card.detail.text() == "10万"
+
+        panel.annual_activity_button.click()
+        assert panel.today_card.title_label.text() == "今日使用金额"
+        assert panel.today_card.value.text() == "¥0.34"
+
+        panel.minute_activity_button.click()
+        assert panel.today_card.title_label.text() == "7月13日使用金额"
+
+    panel.close()
+
+
 def test_minute_date_follows_latest_across_day_when_user_stayed_on_current_date():
     panel = MainPanel()
     first = sample_data()
