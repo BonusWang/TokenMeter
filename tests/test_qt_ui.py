@@ -1671,6 +1671,9 @@ def test_settings_window_exposes_update_controls_without_controller():
     assert window.check_updates_button.text() == "检查更新"
     assert not window.skip_update_button.isEnabled()
     assert window.update_status_label.text()
+    with patch("ui.qt_settings.QDesktopServices.openUrl") as open_url:
+        window.project_homepage_button.click()
+    assert open_url.call_args.args[0].toString() == "https://github.com/zensoku142/TokenMeter"
     window.close()
 
 

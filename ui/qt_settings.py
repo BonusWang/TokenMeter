@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Union
 
-from PySide6.QtCore import QSignalBlocker, QThread, QTime, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QSignalBlocker, QThread, QTime, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 import config_manager
-from app_identity import APP_DISPLAY_NAME
+from app_identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
 from data.store import TokenData
@@ -342,10 +342,19 @@ class SettingsWindow(QDialog):
         self.check_updates_button.clicked.connect(self._check_updates)
         self.skip_update_button = QPushButton("跳过当前版本")
         self.skip_update_button.clicked.connect(self._skip_current_update)
+        self.project_homepage_button = QPushButton("GitHub 项目主页")
+        self.project_homepage_button.clicked.connect(self._open_project_homepage)
         update_actions.addWidget(self.check_updates_button)
         update_actions.addWidget(self.skip_update_button)
+        update_actions.addWidget(self.project_homepage_button)
         update_actions.addStretch(1)
         update_layout.addLayout(update_actions)
+        # 常驻入口比弹窗索要 Star 更克制，也让安装版用户能随时找到源码和反馈渠道。
+        project_hint = QLabel("如果 TokenMeter 对你有帮助，欢迎在 GitHub 点 Star，帮助更多人发现它。")
+        project_hint.setWordWrap(True)
+        project_hint.setProperty("tone", "muted")
+        project_hint.setStyleSheet("font-size: 12px;")
+        update_layout.addWidget(project_hint)
 
         update_page = QWidget()
         update_page_layout = QVBoxLayout(update_page)
@@ -893,6 +902,9 @@ class SettingsWindow(QDialog):
             self._set_update_status("当前运行环境未启用在线更新。")
             return
         self.update_controller.skip_available_version(self)
+
+    def _open_project_homepage(self) -> None:
+        QDesktopServices.openUrl(QUrl(GITHUB_REPOSITORY_URL))
 
     def _choose_data_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(

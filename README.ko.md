@@ -9,6 +9,19 @@
 # TokenMeter
 
 <p align="center">
+  <a href="https://github.com/zensoku142/TokenMeter/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/zensoku142/TokenMeter?style=flat-square"></a>
+  <a href="https://github.com/zensoku142/TokenMeter/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/zensoku142/TokenMeter?style=flat-square"></a>
+  <a href="https://github.com/zensoku142/TokenMeter/releases"><img alt="Release Downloads" src="https://img.shields.io/github/downloads/zensoku142/TokenMeter/total?style=flat-square"></a>
+  <a href="https://github.com/zensoku142/TokenMeter/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/zensoku142/TokenMeter/ci.yml?branch=master&style=flat-square&label=CI"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/zensoku142/TokenMeter/releases/latest"><strong>최신 버전 다운로드</strong></a> ·
+  <a href="https://github.com/zensoku142/TokenMeter/stargazers">Star로 응원하기</a> ·
+  <a href="https://github.com/zensoku142/TokenMeter/discussions">피드백 및 토론</a>
+</p>
+
+<p align="center">
   <strong>Windows용 AI Token 사용량, 비용 및 잔액 모니터</strong><br>
   <sub>DeepSeek 및 Xiaomi MiMo용 AI Token Usage, Cost & Balance Monitor.</sub>
 </p>
@@ -116,8 +129,8 @@ TokenMeter/
 
 ## 버전 및 Release
 
-현재 버전: `1.10.6`. 변경 사항과 체크섬은 [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases)에서 확인하세요.
+현재 버전: `1.10.7`. 변경 사항과 체크섬은 [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases)에서 확인하세요.
 
 ## License
 
-현재 저장소에는 별도 라이선스 파일이 없습니다. 사용 또는 재배포 전에 관리자에게 권한을 확인하세요.
+이 프로젝트는 [MIT License](LICENSE)로 제공됩니다. 저작권 및 라이선스 고지를 유지하면 사용, 수정 및 배포할 수 있습니다.

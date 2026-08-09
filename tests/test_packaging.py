@@ -1,4 +1,5 @@
 import ast
+import re
 from pathlib import Path
 
 
@@ -95,3 +96,19 @@ def test_release_workflow_uses_installer_pipeline_order():
     assert positions == sorted(positions)
     assert "dist-installer/TokenMeter-Setup-v*-x64.exe" in workflow
     assert "dist/TokenMeter-v*-windows-x64.exe" not in workflow
+
+
+def test_workflows_pin_actions_to_commit_shas():
+    # 可变标签会让发布任务在无代码变更时执行不同的第三方代码，因此只接受完整提交 SHA。
+    workflows = list((ROOT / ".github" / "workflows").glob("*.yml"))
+    workflows.extend((ROOT / ".github" / "workflows").glob("*.yaml"))
+    for path in workflows:
+        workflow = path.read_text(encoding="utf-8")
+        uses_lines = [line for line in workflow.splitlines() if line.strip().startswith("uses:")]
+        pinned_refs = re.findall(
+            r"^\s*uses:\s+[^@\s]+@[0-9a-f]{40}(?:\s|$)", workflow, re.MULTILINE
+        )
+        assert len(pinned_refs) == len(uses_lines), path.name
+        assert workflow.count("persist-credentials: false") >= workflow.count(
+            "actions/checkout@"
+        ), path.name

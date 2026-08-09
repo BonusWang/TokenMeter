@@ -9,6 +9,19 @@
 # TokenMeter
 
 <p align="center">
+  <a href="https://github.com/zensoku142/TokenMeter/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/zensoku142/TokenMeter?style=flat-square"></a>
+  <a href="https://github.com/zensoku142/TokenMeter/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/zensoku142/TokenMeter?style=flat-square"></a>
+  <a href="https://github.com/zensoku142/TokenMeter/releases"><img alt="Release Downloads" src="https://img.shields.io/github/downloads/zensoku142/TokenMeter/total?style=flat-square"></a>
+  <a href="https://github.com/zensoku142/TokenMeter/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/zensoku142/TokenMeter/ci.yml?branch=master&style=flat-square&label=CI"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/zensoku142/TokenMeter/releases/latest"><strong>Download latest</strong></a> ·
+  <a href="https://github.com/zensoku142/TokenMeter/stargazers">Star the project</a> ·
+  <a href="https://github.com/zensoku142/TokenMeter/discussions">Feedback & discussions</a>
+</p>
+
+<p align="center">
   <strong>AI Token Usage, Cost & Balance Monitor for Windows</strong><br>
   <sub>Track DeepSeek and Xiaomi MiMo usage from a lightweight desktop floating widget.</sub>
 </p>
@@ -124,8 +137,8 @@ TokenMeter/
 
 ## Version and releases
 
-Current version: `1.10.6`. See [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases) for change notes and checksums.
+Current version: `1.10.7`. See [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases) for change notes and checksums.
 
 ## License
 
-The repository currently has no separate license file. Contact the maintainer before use or redistribution.
+TokenMeter is available under the [MIT License](LICENSE). You may use, modify, and distribute it while preserving the copyright and license notice.
