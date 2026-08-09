@@ -451,8 +451,12 @@ def save_config(values: dict[str, Any]) -> dict[str, Any]:
             try:
                 _write_credential(key, value)
             except Exception:
-                logger().exception("Credential rollback failed for %s", key)
-        logger().exception("Config save failed; public config was not replaced: %s", exc)
+                # 凭据后端异常可能回显秘密；日志不记录字段名、值或异常文本。
+                logger().error("Credential rollback failed")
+        logger().error(
+            "Config save failed; public config was not replaced (%s)",
+            type(exc).__name__,
+        )
         raise
 
 

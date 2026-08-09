@@ -461,6 +461,45 @@ class ConfigTests(unittest.TestCase):
             finally:
                 config_manager._config = old_config
 
+    def test_save_config_failure_log_excludes_credential_context(self):
+        temp_root = Path.cwd() / ".test-appdata" / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            root = Path(directory)
+            current = config_manager.DEFAULT_CONFIG.copy()
+            current["DEEPSEEK_API_KEY"] = "old-secret-value"
+            write_effects = [
+                OSError("credential-secret-leak"),
+                OSError("rollback-secret-leak"),
+                *([None] * (len(config_manager.SECRET_KEYS) - 1)),
+            ]
+
+            with (
+                patch.object(config_manager, "CONFIG_DIR", root),
+                patch.object(config_manager, "CONFIG_PATH", root / "config.json"),
+                patch.object(config_manager, "_config", current),
+                patch.object(config_manager, "ensure_config_file"),
+                patch.object(config_manager, "_write_json"),
+                patch.object(
+                    config_manager,
+                    "_write_credential",
+                    side_effect=write_effects,
+                ),
+                patch.object(config_manager, "logger") as logger_factory,
+            ):
+                with self.assertRaisesRegex(OSError, "credential-secret-leak"):
+                    config_manager.save_config({"DEEPSEEK_API_KEY": "new-secret-value"})
+
+            logged = str(logger_factory.return_value.mock_calls)
+            for sensitive_text in (
+                "DEEPSEEK_API_KEY",
+                "old-secret-value",
+                "new-secret-value",
+                "credential-secret-leak",
+                "rollback-secret-leak",
+            ):
+                self.assertNotIn(sensitive_text, logged)
+
     def test_save_ui_theme_only_replaces_public_preference(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"
         temp_root.mkdir(parents=True, exist_ok=True)
