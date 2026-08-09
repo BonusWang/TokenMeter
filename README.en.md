@@ -137,7 +137,7 @@ TokenMeter/
 
 ## Version and releases
 
-Current version: `1.10.7`. See [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases) for change notes and checksums.
+Current version: `1.10.8`. See [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases) for change notes and checksums.
 
 ## License
 
