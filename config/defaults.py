@@ -31,6 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "MIMO_API_PLATFORM_PH": "",
     "MIMO_API_KEY": "",
     "MIMO_BASE": "https://platform.xiaomimimo.com",
+    "CODEX_HOME": "",
     "REFRESH_INTERVAL": 60_000,
     "WIDGET_COMPACT_SIZE": 88,
     "WIDGET_EXPANDED_SIZE": (820, 564),

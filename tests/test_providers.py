@@ -1,6 +1,9 @@
+import json
 import os
+import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -10,6 +13,7 @@ os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 import config_manager
 from api.deepseek import APIError
 from api.providers.base import build_session
+from api.providers.codex import CodexProvider
 from api.providers.deepseek import DeepSeekProvider
 from api.providers.mimo import MiMoProvider
 
@@ -20,6 +24,95 @@ def response(payload, status=200):
     result.ok = 200 <= status < 400
     result.json.return_value = payload
     return result
+
+
+class MultiProviderTests(unittest.TestCase):
+    def test_codex_reads_subscription_windows_and_credits(self):
+        provider = CodexProvider()
+        provider._credentials = Mock(return_value=("access", "account", {"email": "a@example.com"}))
+        provider._local_activity = Mock(
+            return_value=((('2026-08-09', 12_000),), ())
+        )
+        provider._session.get = Mock(
+            return_value=response(
+                {
+                    "plan_type": "pro",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 27,
+                            "reset_at": 1785816000,
+                            "limit_window_seconds": 604800,
+                        },
+                    },
+                    "credits": {"has_credits": True, "balance": "14.5"},
+                }
+            )
+        )
+        try:
+            quota, error = provider.fetch_quota()
+        finally:
+            provider.close()
+        self.assertIsNone(error)
+        self.assertEqual([window.title for window in quota.windows], ["每周额度"])
+        self.assertEqual(quota.windows[0].window_minutes, 10_080)
+        self.assertEqual(quota.metrics[0].value, "14.5")
+        self.assertEqual(quota.account_label, "a@example.com")
+        self.assertEqual(quota.plan, "pro")
+        self.assertEqual(quota.activity, (("2026-08-09", 12_000),))
+
+    def test_codex_local_sessions_build_activity_and_five_statistics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            sessions = home / "sessions" / "2026" / "08" / "09"
+            sessions.mkdir(parents=True)
+            today = datetime.now().astimezone().date()
+            yesterday = today - timedelta(days=1)
+
+            def line(timestamp, event_type, payload):
+                return json.dumps(
+                    {"timestamp": timestamp, "type": event_type, "payload": payload},
+                    separators=(",", ":"),
+                )
+
+            def token_event(total, cached=0):
+                return {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "total_tokens": total,
+                            "cached_input_tokens": cached,
+                        }
+                    },
+                }
+            first = [
+                line(f"{today.isoformat()}T08:00:00+08:00", "session_meta", {}),
+                line(f"{today.isoformat()}T08:10:00+08:00", "event_msg", token_event(10_000, 4_000)),
+                line(f"{today.isoformat()}T08:20:00+08:00", "event_msg", token_event(15_000, 6_000)),
+                line(f"{today.isoformat()}T08:52:35+08:00", "event_msg", {"type": "task_complete"}),
+            ]
+            second = [
+                line(f"{yesterday.isoformat()}T09:00:00+08:00", "session_meta", {}),
+                line(f"{yesterday.isoformat()}T09:01:00+08:00", "event_msg", token_event(6_000)),
+            ]
+            (sessions / "first.jsonl").write_text("\n".join(first) + "\n", encoding="utf-8")
+            (sessions / "second.jsonl").write_text("\n".join(second) + "\n", encoding="utf-8")
+
+            provider = CodexProvider({"CODEX_HOME": str(home)})
+            try:
+                activity, statistics = provider._local_activity()
+            finally:
+                provider.close()
+
+        self.assertEqual(dict(activity)[today.isoformat()], 21_000)
+        self.assertEqual(dict(activity)[yesterday.isoformat()], 6_000)
+        self.assertEqual([item.title for item in statistics], [
+            "累计 Token 数",
+            "峰值 Token 数",
+            "最长聊天时长",
+            "当前连续天数",
+            "最长连续天数",
+        ])
+        self.assertEqual([item.value for item in statistics[:3]], ["2.7万", "2.1万", "52分 35秒"])
 
 
 class MiMoProviderTests(unittest.TestCase):

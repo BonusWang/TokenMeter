@@ -1,5 +1,5 @@
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app_update import CheckResult, ReleaseAsset, ReleaseInfo, SemVer
+from api.providers.base import QuotaMetric, QuotaWindow
 import config_manager
 from data.store import PerProviderData, TokenData
 from ui.geometry import WorkArea
@@ -45,7 +46,9 @@ from ui.qt_panel import (
     MinuteUsageChart,
     StatisticsCard,
     TrendCard,
+    format_money,
     format_money_axis,
+    format_reset_countdown,
     format_token_axis,
 )
 from ui.qt_settings import SettingsWindow
@@ -164,6 +167,133 @@ def test_money_axis_and_zero_cost_range_remain_readable():
     assert trend._values == [0.0] * 7
     assert trend.plot.getViewBox().viewRange()[1][1] >= 0.01
     trend.close()
+
+
+def test_money_format_uses_provider_native_currency():
+    assert format_money(1.25, "USD") == "$1.25"
+    assert format_money_axis(0.006, "USD") == "$0.0060"
+
+
+def test_panel_quick_switches_provider_and_renders_subscription_quota():
+    panel = MainPanel()
+    data = sample_data()
+    reset = datetime.now(timezone.utc) + timedelta(hours=2)
+    data.quota_windows = [
+        QuotaWindow("codex-weekly", "每周额度", 25, resets_at=reset),
+    ]
+    data.quota_metrics = [QuotaMetric("可用 Credits", "12.5")]
+    data.quota_statistics = [
+        QuotaMetric("累计 Token 数", "21.7亿"),
+        QuotaMetric("峰值 Token 数", "1.1亿"),
+        QuotaMetric("最长聊天时长", "52分 35秒"),
+        QuotaMetric("当前连续天数", "0 天"),
+        QuotaMetric("最长连续天数", "27 天"),
+    ]
+    data.account_plan = "pro"
+    data.account_label = "a@example.com"
+    data.per_provider = [
+        PerProviderData(
+            "codex",
+            "Codex",
+            quota_windows=list(data.quota_windows),
+            quota_metrics=list(data.quota_metrics),
+            quota_statistics=list(data.quota_statistics),
+            account_plan="pro",
+            account_label="a@example.com",
+        )
+    ]
+    selected_providers: list[str] = []
+    panel.provider_selected.connect(selected_providers.append)
+
+    panel.update_data(data)
+
+    assert panel.provider_quick_combo.currentData() == "codex"
+    assert panel.today_card.title_label.text() == "每周额度"
+    assert panel.today_card.value.text() == "已用 25%"
+    assert not panel.today_card.detail.isHidden()
+    assert "剩余 75%" in panel.today_card.detail.text()
+    assert "后重置" in panel.today_card.detail.text()
+    assert panel.balance_card.title_label.text() == "可用 Credits"
+    assert panel.balance_card.value.text() == "12.5"
+    assert panel.month_card.title_label.text() == "订阅套餐"
+    assert panel.month_card.value.text() == "pro"
+    assert not panel.trend.isHidden()
+    assert panel.trend.title.text() == "近 7 天 Token 使用量"
+    assert "Token：" in panel.trend.tooltip_text(0)
+    assert "金额" not in panel.trend.tooltip_text(0)
+    assert not panel.activity_card.isHidden()
+    assert panel.activity_mode_segment.isHidden()
+    assert [label.text() for label in panel.statistics._values] == [
+        "21.7亿",
+        "1.1亿",
+        "52分 35秒",
+        "0 天",
+        "27 天",
+    ]
+
+    mimo_index = panel.provider_quick_combo.findData("mimo")
+    panel.provider_quick_combo.setCurrentIndex(mimo_index)
+    panel.provider_quick_combo.activated.emit(mimo_index)
+
+    assert selected_providers == ["mimo"]
+    panel.close()
+
+
+def test_reset_countdown_is_timezone_safe_and_readable():
+    now = datetime(2026, 8, 9, 8, 0, tzinfo=timezone.utc)
+    assert format_reset_countdown(now + timedelta(days=1, hours=2), now) == "1 天 2 小时后重置"
+    assert format_reset_countdown(now + timedelta(minutes=45), now) == "45 分钟后重置"
+
+
+def test_codex_ball_never_falls_back_to_currency_when_quota_is_unavailable():
+    data = TokenData(
+        status="partial",
+        per_provider=[PerProviderData("codex", "Codex", status="partial")],
+    )
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+        widget._data = data
+        widget._refreshing = False
+        widget._apply_update()
+
+    assert widget.ball._quota_mode
+    assert widget.ball._quota_remaining is None
+    assert widget.ball._quota_title == "周额度"
+    assert widget.ball._quota_reset_text == "额度暂不可用"
+    assert "¥" not in widget.ball.toolTip()
+    widget._closed = True
+    widget.hide()
+
+
+def test_codex_ball_uses_remaining_quota_and_compact_reset_time():
+    reset = datetime.now(timezone.utc) + timedelta(days=2, hours=8)
+    window = QuotaWindow("codex-weekly", "每周额度", 25, resets_at=reset)
+    data = TokenData(
+        status="ok",
+        quota_windows=[window],
+        per_provider=[
+            PerProviderData("codex", "Codex", quota_windows=[window], status="ok")
+        ],
+    )
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+        widget._data = data
+        widget._refreshing = False
+        widget._apply_update()
+
+    assert widget.ball._quota_mode
+    assert widget.ball._quota_remaining == 75
+    assert widget.ball._quota_title == "周额度"
+    assert "天" in widget.ball._quota_reset_text
+    assert "小时后重置" in widget.ball._quota_reset_text
+    assert widget.ball.accessibleDescription() == "75%"
+
+    widget._data = sample_data()
+    widget._apply_update()
+    assert not widget.ball._quota_mode
+    assert widget.ball.toolTip() == ""
+    widget._closed = True
+    widget.hide()
 
 
 def test_minute_chart_tooltip_legend_and_navigator_preserve_raw_series():
@@ -1513,6 +1643,46 @@ def test_ball_peak_highlight_enhances_glow_without_pricing_text():
     assert (ball._today, ball._balance) == ("¥4.31", "¥36.03")
     assert (ball.width(), ball.height()) == (88, 88)
     ball.close()
+
+
+def test_codex_water_ball_renders_quota_level_in_dark_and_light_themes():
+    controller = configure_theme(APP, "dark")
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(72, "2 天 8 小时后重置", "每周额度")
+    ball.show()
+    APP.processEvents()
+    dark_image = ball.grab().toImage()
+    dark_empty = dark_image.pixelColor(44, 15)
+    dark_water = dark_image.pixelColor(44, 68)
+
+    try:
+        initial_phase = ball._wave_phase
+        QTest.qWait(ball._wave_timer.interval() * 2 + 10)
+        assert ball._wave_timer.isActive()
+        assert ball._wave_phase != initial_phase
+        assert dark_water.blue() > dark_water.red()
+        assert dark_water != dark_empty
+        assert ball._quota_reset_text == "2天 8小时后重置"
+        assert ball.toolTip() == "72%"
+        assert ball.accessibleDescription() == "72%"
+
+        controller.set_mode("light")
+        APP.processEvents()
+        light_image = ball.grab().toImage()
+        light_empty = light_image.pixelColor(44, 15)
+        light_water = light_image.pixelColor(44, 68)
+
+        assert light_empty.lightness() > dark_empty.lightness()
+        assert light_water.blue() > light_water.red()
+        assert light_water != dark_water
+
+        ball.set_quota_state(0, "即将重置", "周额度")
+        APP.processEvents()
+        empty_bottom = ball.grab().toImage().pixelColor(44, 68)
+        assert empty_bottom != light_water
+    finally:
+        controller.set_mode("dark")
+        ball.close()
 
 
 def test_settings_exposes_panel_auto_collapse_toggle():

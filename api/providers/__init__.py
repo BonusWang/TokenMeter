@@ -13,9 +13,13 @@ from api.providers.base import (
     FetchError,
     ModelUsage,
     Provider,
-    ProviderSummary,
     ProviderBalance,
+    ProviderQuota,
+    ProviderSummary,
+    QuotaMetric,
+    QuotaWindow,
 )
+from api.providers.codex import CodexProvider
 from api.providers.deepseek import DeepSeekProvider
 from api.providers.mimo import MiMoProvider
 
@@ -23,6 +27,7 @@ from api.providers.mimo import MiMoProvider
 PROVIDERS: dict[str, type[Provider]] = {
     DeepSeekProvider.id: DeepSeekProvider,
     MiMoProvider.id: MiMoProvider,
+    CodexProvider.id: CodexProvider,
 }
 
 
@@ -73,7 +78,10 @@ __all__ = [
     "ModelUsage",
     "Provider",
     "ProviderBalance",
+    "ProviderQuota",
     "ProviderSummary",
+    "QuotaMetric",
+    "QuotaWindow",
     "PROVIDERS",
     "get_provider",
     "list_providers",

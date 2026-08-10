@@ -22,18 +22,19 @@
 </p>
 
 <p align="center">
-  <strong>Windows AI Token 用量、费用与余额监控工具</strong><br>
-  <sub>AI Token Usage, Cost & Balance Monitor for DeepSeek and Xiaomi MiMo.</sub>
+  <strong>Windows AI 编程订阅额度、Token 用量与余额监控工具</strong><br>
+  <sub>Codex Subscription Quota, DeepSeek & MiMo Token Usage Monitor.</sub>
 </p>
 
-TokenMeter 是一款轻量级 Windows 桌面 AI Token 用量监控工具，用于查看 DeepSeek、小米 MiMo 等平台的 Token 消耗、调用费用、账户余额和历史趋势。程序常驻系统托盘，通过悬浮球和展开面板提供 token usage tracker、AI cost monitor、balance monitor 与 Windows desktop widget 体验。
+TokenMeter 是一款轻量级 Windows 桌面 AI 用量监控工具。它以类似 [CodexBar](https://github.com/steipete/CodexBar) 的方式显示 Codex 订阅额度、剩余比例与重置倒计时，并从本机 Codex 会话记录生成年度 Token 活动和连续使用统计；DeepSeek 与 Xiaomi MiMo 继续展示 Token、费用、余额和历史趋势。
 
 ## 功能
 
-- 支持 DeepSeek 与 Xiaomi MiMo，平台缓存互不混用。
-- 悬浮球和系统托盘常驻，支持拖动、边缘吸附、位置记忆与失焦收起。
+- 首期只支持 Codex、DeepSeek 与 Xiaomi MiMo，平台缓存互不混用。
+- 主面板一键切换 Provider；订阅平台展示已用/剩余比例和重置倒计时，API 平台动态展示原生币种金额。
+- 悬浮球和系统托盘常驻；Codex 以深浅主题水球显示周额度水位、剩余百分比和重置倒计时，DeepSeek/MiMo 保留金额视图。
 - 提供浅色、深色及跟随 Windows 的主题。
-- 展示余额、Token 用量、费用趋势、模型统计、分时图和年度活跃热力图。
+- Codex 按接口返回的窗口时长展示当前周额度与重置时间，右侧显示近 7 天 Token 使用量；同时保留年度活动、累计/峰值 Token、最长聊天和连续使用天数。
 - DeepSeek 支持峰谷计价提示；MiMo Cookie 可通过专用 Chrome 会话获取和续期。
 - 网络异常时保留最近成功数据；历史数据缓存在本地 SQLite。
 - API Key、Bearer Token 和 Cookie 保存到 Windows 凭据管理器。
@@ -48,11 +49,11 @@ TokenMeter 是一款轻量级 Windows 桌面 AI Token 用量监控工具，用�
 ## 系统要求
 
 - Windows 10 或 Windows 11；源码运行需要 Python 3.11+。
-- DeepSeek 账户或 Xiaomi MiMo Token Plan 账户及对应 Cookie / Token。
+- 至少一个受支持平台账户；Codex 复用本机 CLI 登录，DeepSeek/MiMo 使用原有平台凭据。
 - DeepSeek API Key 可选，用于官方余额接口。
 
 > [!IMPORTANT]
-> 用量数据依赖平台网页控制台接口；MiMo Cookie 需包含 `api-platform_ph`。平台接口或风控变化可能暂时影响数据。请仅使用自己的账户凭据并妥善保管。
+> 订阅额度依赖本机 CLI OAuth 会话或产品额度接口，DeepSeek/MiMo 用量依赖平台控制台接口。平台接口、套餐或风控变化可能暂时影响数据。请仅使用自己的账户凭据并妥善保管。
 
 ## 安装
 
@@ -85,8 +86,8 @@ python -m pip install -r requirements-build.txt
 ## 首次配置
 
 1. 启动程序并点击悬浮球展开面板。
-2. 打开“设置”，选择 DeepSeek 或 Xiaomi MiMo。
-3. 填写 Bearer Token、Cookie 或可选的 DeepSeek API Key。MiMo 可点击“一键获取 MiMo Cookie”，程序会自动提取 `api-platform_ph`。
+2. 打开“设置”，选择 Codex、DeepSeek 或 Xiaomi MiMo。
+3. Codex 默认读取本机 CLI 登录；DeepSeek 填写 API Key/控制台凭据；MiMo 可点击“一键获取 MiMo Cookie”。
 4. 保存设置并刷新。默认刷新间隔为 60 秒。
 
 `config.example.py` 仅展示配置项；无需复制为 `config.py`。旧版 `config.py` 会在首次启动时尝试迁移。
@@ -129,7 +130,7 @@ python scripts/build_release.py
 
 ```text
 TokenMeter/
-├── api/providers/       # DeepSeek 与 Xiaomi MiMo 适配器
+├── api/providers/       # 各 AI 平台的 Provider 适配器
 ├── data/                # 聚合与 SQLite 历史缓存
 ├── tests/               # 单元与 Qt 测试
 ├── ui/                  # PySide6 界面
@@ -149,7 +150,9 @@ TokenMeter/
 
 ## 版本与 Release
 
-当前版本：`1.10.8`。更新记录及校验文件见 [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases)。
+当前版本：`1.11.0`。更新记录及校验文件见 [GitHub Releases](https://github.com/zensoku142/TokenMeter/releases)。
+
+2.0 的 Provider 能力边界、分批计划和已执行基础见 [TokenMeter 2.0 路线图](docs/V2_ROADMAP.md)。
 
 ## License
 

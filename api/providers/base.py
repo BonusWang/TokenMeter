@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -38,6 +39,33 @@ class ProviderSummary:
     month_cost: Decimal | None = None
     month_tokens: int = 0
     remaining_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class QuotaWindow:
+    id: str
+    title: str
+    used_percent: float
+    resets_at: datetime | None = None
+    window_minutes: int | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class QuotaMetric:
+    title: str
+    value: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderQuota:
+    windows: tuple[QuotaWindow, ...] = ()
+    metrics: tuple[QuotaMetric, ...] = ()
+    activity: tuple[tuple[str, int], ...] = ()
+    statistics: tuple[QuotaMetric, ...] = ()
+    account_label: str = ""
+    plan: str = ""
 
 
 def _decimal(value: Any) -> Decimal:
@@ -86,6 +114,7 @@ class Provider:
     supports_cost = False
     supports_estimated_minute_usage = False
     supports_cookie_acquisition = False
+    supports_subscription_quota = False
     credential_fields: dict[str, dict[str, Any]] = {}
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
@@ -116,6 +145,9 @@ class Provider:
         return None, None
 
     def fetch_summary(self) -> tuple[ProviderSummary | None, FetchError | None]:
+        return None, None
+
+    def fetch_quota(self) -> tuple[ProviderQuota | None, FetchError | None]:
         return None, None
 
     def fetch_payloads(

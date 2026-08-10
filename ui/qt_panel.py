@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QButtonGroup,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 import config_manager
+from api.providers import PROVIDERS, list_providers
 from app_identity import APP_DISPLAY_NAME
 from data.store import TokenData
 from ui.activity import compact_tokens
@@ -60,29 +62,64 @@ SECTION_SPACING = 0
 SECTION_HORIZONTAL_MARGIN = 22
 
 
-def format_money(value: float | Decimal | None) -> str:
+def _currency_prefix(currency: str) -> str:
+    normalized = str(currency or "CNY").strip().upper()
+    return {"CNY": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(
+        normalized, f"{normalized} "
+    )
+
+
+def format_money(value: float | Decimal | None, currency: str = "CNY") -> str:
     if value is None:
         return "--"
     amount = float(value)
     decimals = 4 if 0 < abs(amount) < 0.01 else 2
-    return f"¥{amount:.{decimals}f}"
+    return f"{_currency_prefix(currency)}{amount:.{decimals}f}"
 
 
 def format_token_axis(value: float) -> str:
     return compact_tokens(int(round(value)))
 
 
-def format_money_axis(value: float) -> str:
+def format_money_axis(value: float, currency: str = "CNY") -> str:
     absolute = abs(value)
     if absolute >= 100:
-        return f"¥{value:,.0f}"
+        return f"{_currency_prefix(currency)}{value:,.0f}"
     decimals = 4 if 0 < absolute < 0.01 else 2
-    return f"¥{value:.{decimals}f}"
+    return f"{_currency_prefix(currency)}{value:.{decimals}f}"
+
+
+def format_reset_countdown(value: datetime | None, now: datetime | None = None) -> str:
+    if value is None:
+        return "重置时间未知"
+    current = now or datetime.now(value.tzinfo)
+    if value.tzinfo is not None and current.tzinfo is None:
+        current = current.replace(tzinfo=value.tzinfo)
+    elif value.tzinfo is None and current.tzinfo is not None:
+        current = current.replace(tzinfo=None)
+    seconds = max(0, int((value - current).total_seconds()))
+    if seconds <= 0:
+        return "即将重置"
+    minutes = max(1, ceil(seconds / 60))
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days} 天 {hours} 小时后重置"
+    if hours:
+        return f"{hours} 小时 {minutes} 分钟后重置"
+    return f"{minutes} 分钟后重置"
 
 
 class MoneyAxis(pg.AxisItem):
+    def __init__(self, *args, currency: str = "CNY", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.currency = currency
+        self.token_mode = False
+
     def tickStrings(self, values, scale, spacing):
-        return [format_money_axis(value * scale) for value in values]
+        if self.token_mode:
+            return [format_token_axis(value * scale) for value in values]
+        return [format_money_axis(value * scale, self.currency) for value in values]
 
 
 class TokenAxis(pg.AxisItem):
@@ -525,7 +562,7 @@ class MetricCard(QFrame):
 
 
 class TrendCard(QFrame):
-    """Seven-day cost chart rendered as seven flat bars."""
+    """Seven-day provider activity rendered as seven flat bars."""
 
     BAR_WIDTH = 0.36
 
@@ -564,6 +601,8 @@ class TrendCard(QFrame):
 
         self._dates: list[date] = []
         self._values: list[float] = []
+        self._currency = "CNY"
+        self._token_mode = False
         self._series: pg.BarGraphItem | None = None
         self._hover_index: int | None = None
         self._mouse_proxy = pg.SignalProxy(
@@ -583,12 +622,25 @@ class TrendCard(QFrame):
             # controller exists; production configures the theme before any window.
             pass
 
-    def set_rows(self, rows: list[dict], today: date | None = None) -> None:
+    def set_rows(
+        self,
+        rows: list[dict],
+        today: date | None = None,
+        currency: str = "CNY",
+        token_mode: bool = False,
+    ) -> None:
+        self._currency = str(currency or "CNY").upper()
+        self._token_mode = token_mode
+        self.title.setText("近 7 天 Token 使用量" if token_mode else "近 7 天使用金额")
+        left_axis = self.plot.getAxis("left")
+        left_axis.currency = self._currency
+        left_axis.token_mode = token_mode
         current = today or date.today()
         by_date = {str(row.get("date")): row for row in rows}
         self._dates = [current - timedelta(days=offset) for offset in range(6, -1, -1)]
+        value_key = "tokens" if token_mode else "cost_cny"
         self._values = [
-            float(by_date.get(day.isoformat(), {}).get("cost_cny", 0) or 0)
+            float(by_date.get(day.isoformat(), {}).get(value_key, 0) or 0)
             for day in self._dates
         ]
         self.plot.clear()
@@ -609,12 +661,17 @@ class TrendCard(QFrame):
         # Preserve half a day at each edge so all seven bars stay fully visible.
         self.plot.setXRange(-0.5, 6.5, padding=0)
         maximum = max(self._values, default=0.0)
-        tick_max = max(0.01, maximum)
+        tick_max = max(1.0 if token_mode else 0.01, maximum)
         range_max = tick_max * 1.08 if maximum > 0 else tick_max
         self.plot.setYRange(0, range_max, padding=0)
         self.plot.getAxis("left").setTicks(
             [[
-                (tick_max * index / 3, format_money_axis(tick_max * index / 3))
+                (
+                    tick_max * index / 3,
+                    format_token_axis(tick_max * index / 3)
+                    if token_mode
+                    else format_money_axis(tick_max * index / 3, self._currency),
+                )
                 for index in range(4)
             ]]
         )
@@ -685,9 +742,14 @@ class TrendCard(QFrame):
         QToolTip.hideText()
 
     def tooltip_text(self, index: int) -> str:
+        if self._token_mode:
+            return (
+                f"{self._dates[index].isoformat()}\n"
+                f"Token：{compact_tokens(int(self._values[index]))}"
+            )
         return (
             f"{self._dates[index].isoformat()}\n"
-            f"使用金额：{format_money(self._values[index])}"
+            f"使用金额：{format_money(self._values[index], self._currency)}"
         )
 
 
@@ -774,6 +836,7 @@ class MinuteUsageTooltip(QFrame):
         end_minute: int,
         values: tuple[int, int, int],
         cost_cny: Decimal | None,
+        currency: str = "CNY",
     ) -> None:
         hit, miss, output = values
         total = hit + miss + output
@@ -790,7 +853,7 @@ class MinuteUsageTooltip(QFrame):
         for label, value in zip(self.value_labels, values):
             label.setText(compact_tokens(value))
         self.rate_label.setText(rate)
-        self.cost_label.setText(format_money(cost_cny))
+        self.cost_label.setText(format_money(cost_cny, currency))
 
     def refresh_colors(self, colors: tuple[QColor, QColor, QColor]) -> None:
         for swatch, color in zip(self.swatches, colors):
@@ -815,6 +878,7 @@ class MinuteUsageChart(QWidget):
         super().__init__(parent)
         self.setObjectName("minuteUsageChart")
         self._chart_type = "bar"
+        self._currency = "CNY"
         self._interval_minutes = 1
         self._bucket_starts = list(range(1440))
         self._bucket_centers = [float(minute) for minute in range(1440)]
@@ -918,6 +982,7 @@ class MinuteUsageChart(QWidget):
         cost_rows: list[dict] | None = None,
         interval_minutes: int = 1,
         chart_type: str = "bar",
+        currency: str = "CNY",
     ) -> None:
         chart_type = str(chart_type).strip().lower()
         if chart_type not in {"bar", "line"}:
@@ -955,9 +1020,11 @@ class MinuteUsageChart(QWidget):
             status,
             chart_type,
             interval_minutes,
+            currency,
             tuple(tuple(values[key]) for key, _label in self.SERIES),
         )
         self._chart_type = chart_type
+        self._currency = str(currency or "CNY").upper()
         self._interval_minutes = interval_minutes
         self._bucket_starts = bucket_starts
         self._bucket_centers = [
@@ -1471,6 +1538,7 @@ class MinuteUsageChart(QWidget):
             end_minute,
             values,
             self._cost_values[bucket_index],
+            self._currency,
         )
         self.hover_tooltip.adjustSize()
         x = local.x() + 10
@@ -1509,7 +1577,7 @@ class MinuteUsageChart(QWidget):
             f"■ 输入（未命中缓存）　{miss:,}\n"
             f"■ 输出　{output:,}\n"
             f"缓存命中率　{rate}\n"
-            f"{cost_name}　{format_money(self._cost_values[bucket_index])}"
+            f"{cost_name}　{format_money(self._cost_values[bucket_index], self._currency)}"
         )
 
     def summary_text(self) -> str:
@@ -1556,9 +1624,9 @@ class StatisticsCard(QFrame):
         line.setFixedHeight(1)
         layout.addWidget(line)
 
-        title = QLabel("使用统计")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
+        self.title = QLabel("使用统计")
+        self.title.setObjectName("sectionTitle")
+        layout.addWidget(self.title)
 
         columns = QHBoxLayout()
         columns.setContentsMargins(0, 0, 0, 0)
@@ -1593,6 +1661,14 @@ class StatisticsCard(QFrame):
         layout.addLayout(columns, 1)
 
     def set_data(self, data: TokenData) -> None:
+        self.title.setText("使用统计")
+        for name, text in zip(self._names, self.LABELS):
+            name.setText(text)
+            name.setToolTip(
+                "按本机已缓存账单累计，未同步的早期账单不计入"
+                if text == "历史使用总金额"
+                else ""
+            )
         recent_rows = {str(row.get("date")): row for row in data.daily_usage}
         recent_dates = [date.today() - timedelta(days=offset) for offset in range(6, -1, -1)]
         recent_cost = sum(
@@ -1605,14 +1681,31 @@ class StatisticsCard(QFrame):
         )
         has_daily_data = data.today_tokens is not None
         values = (
-            format_money(data.monthly_cost_cny),
-            format_money(data.total_cost_cny),
+            format_money(data.monthly_cost_cny, data.currency),
+            format_money(data.total_cost_cny, data.currency),
             compact_tokens(data.monthly_usage_tokens) if data.monthly_usage_tokens is not None else "--",
-            format_money(recent_cost) if has_daily_data else "--",
+            format_money(recent_cost, data.currency) if has_daily_data else "--",
             compact_tokens(recent_tokens) if has_daily_data else "--",
         )
         for label, value in zip(self._values, values):
             label.setText(value)
+            label.setToolTip("")
+
+    def set_quota_data(self, data: TokenData) -> None:
+        self.title.setText("Codex 使用统计")
+        items = [(metric.title, metric.value, metric.detail) for metric in data.quota_statistics]
+        for index, (name, value) in enumerate(zip(self._names, self._values)):
+            if index < len(items):
+                title, text, tooltip = items[index]
+                name.setText(title)
+                name.setToolTip(tooltip)
+                value.setText(text if len(text) <= 22 else f"{text[:21]}…")
+                value.setToolTip(tooltip or text)
+            else:
+                name.setText("--")
+                name.setToolTip("")
+                value.setText("--")
+                value.setToolTip("")
 
 
 class MainPanel(QFrame):
@@ -1620,6 +1713,7 @@ class MainPanel(QFrame):
     refresh_requested = Signal()
     close_requested = Signal()
     theme_requested = Signal(str)
+    provider_selected = Signal(str)
     activity_height_changed = Signal(int)
 
     def __init__(self, parent: QWidget | None = None):
@@ -1646,6 +1740,7 @@ class MainPanel(QFrame):
         self._today_cost_cny: float | None = None
         self._today_tokens: int | None = None
         self._usage_card_loading = False
+        self._currency = "CNY"
 
         root = QVBoxLayout(self)
         root.setContentsMargins(1, 1, 1, 1)
@@ -1664,11 +1759,21 @@ class MainPanel(QFrame):
         self._title_label = QLabel(APP_DISPLAY_NAME)
         self._title_label.setObjectName("panelTitle")
         provider_id = str(config_manager.get("ACTIVE_PROVIDER", "deepseek"))
-        provider_name = {"deepseek": "DeepSeek", "mimo": "小米 MiMo"}.get(
-            provider_id, provider_id
+        self.provider_quick_combo = QComboBox()
+        self.provider_quick_combo.setObjectName("headerProviderCombo")
+        self.provider_quick_combo.setAccessibleName("快速切换数据平台")
+        self.provider_quick_combo.setToolTip("一键切换订阅或 API 数据平台")
+        self.provider_quick_combo.setFixedSize(132, 28)
+        for item_id, item_name in list_providers():
+            self.provider_quick_combo.addItem(item_name, item_id)
+        self.provider_quick_combo.setCurrentIndex(
+            max(0, self.provider_quick_combo.findData(provider_id))
         )
-        self._provider_label = QLabel(f" · {provider_name}" if provider_name else "")
-        self._provider_label.setObjectName("panelSubtitle")
+        self.provider_quick_combo.activated.connect(
+            lambda _index: self.provider_selected.emit(
+                str(self.provider_quick_combo.currentData() or "")
+            )
+        )
         self.pricing_badge = QLabel()
         self.pricing_badge.setObjectName("pricingBadge")
         self.pricing_badge.setProperty("pricingState", "offpeak")
@@ -1678,7 +1783,7 @@ class MainPanel(QFrame):
         self.pricing_badge.hide()
         header_layout.addWidget(logo)
         header_layout.addWidget(self._title_label)
-        header_layout.addWidget(self._provider_label)
+        header_layout.addWidget(self.provider_quick_combo)
         header_layout.addWidget(self.pricing_badge)
         header_layout.addStretch(1)
 
@@ -1760,11 +1865,11 @@ class MainPanel(QFrame):
         metrics_layout.addLayout(compact_metrics, 2)
         top_layout.addWidget(self.metrics_container, 5)
 
-        main_divider = QFrame()
-        main_divider.setObjectName("divider")
-        main_divider.setFrameShape(QFrame.Shape.VLine)
-        main_divider.setFixedWidth(1)
-        top_layout.addWidget(main_divider)
+        self.main_divider = QFrame()
+        self.main_divider.setObjectName("divider")
+        self.main_divider.setFrameShape(QFrame.Shape.VLine)
+        self.main_divider.setFixedWidth(1)
+        top_layout.addWidget(self.main_divider)
 
         self.trend = TrendCard()
         self.trend.setMinimumWidth(300)
@@ -1822,15 +1927,15 @@ class MainPanel(QFrame):
         self.minute_controls: list[QWidget] = [self.minute_date_edit]
         self.minute_estimate_label = QLabel("估算")
         self.minute_estimate_label.setObjectName("muted")
-        estimate_tooltip = "按刷新间隔均摊：两次成功刷新之间的累计 Token 差额，非平台原始分钟明细"
-        self.minute_estimate_label.setToolTip(estimate_tooltip)
+        self._minute_estimate_tooltip = "按刷新间隔均摊：两次成功刷新之间的累计 Token 差额，非平台原始分钟明细"
+        self.minute_estimate_label.setToolTip(self._minute_estimate_tooltip)
         self.activity_summary = QLabel("暂无 Token 活动")
         self.activity_summary.setObjectName("activitySummary")
         self.activity_summary.setMinimumWidth(200)
         self.activity_summary.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        self.activity_summary.setToolTip(estimate_tooltip)
+        self.activity_summary.setToolTip(self._minute_estimate_tooltip)
         self._annual_activity_summary = "暂无 Token 活动"
         self._activity_view = "annual"
         activity_header.addWidget(activity_title)
@@ -1993,7 +2098,7 @@ class MainPanel(QFrame):
             cost = self._today_cost_cny
             token_count = self._today_tokens
         self.today_card.set_values(
-            "--" if self._usage_card_loading else format_money(cost),
+            "--" if self._usage_card_loading else format_money(cost, self._currency),
             "--"
             if self._usage_card_loading or token_count is None
             else compact_tokens(int(token_count)),
@@ -2140,6 +2245,7 @@ class MainPanel(QFrame):
             cost_rows=cost_rows,
             interval_minutes=interval_minutes,
             chart_type=chart_type,
+            currency=self._currency,
         )
         self.activity_summary.setText(
             self.minute_chart.summary_text()
@@ -2313,12 +2419,102 @@ class MainPanel(QFrame):
         self.pricing_badge.style().polish(self.pricing_badge)
         self.pricing_badge.update()
 
+    def _set_annual_activity_data(self, data: TokenData) -> None:
+        self.activity.set_activity(data.daily_usage)
+        source_days = [day for day in self.activity.days if day.has_source_data]
+        total = sum(day.token_count for day in source_days)
+        if not source_days:
+            summary = "暂无 Token 活动"
+        else:
+            first = min(day.date for day in source_days)
+            summary = (
+                f"数据始于 {first.isoformat()} · 共 {compact_tokens(total)}"
+                if first > self.activity.period.start
+                else f"过去 12 个月共使用 {compact_tokens(total)}"
+            )
+        self._annual_activity_summary = summary
+        self.activity_summary.setText(summary)
+
     def update_data(self, data: TokenData, loading: bool = False) -> None:
-        money = lambda value: "--" if loading else format_money(value)
+        self._currency = str(data.currency or "CNY").upper()
+        money = lambda value: "--" if loading else format_money(value, self._currency)
         tokens = lambda value: "--" if loading or value is None else compact_tokens(int(value))
+        provider_id = ""
         if data.per_provider:
-            provider_name = data.per_provider[0].provider_name
-            self._provider_label.setText(f" · {provider_name}")
+            provider_id = data.per_provider[0].provider_id
+            provider_blocker = QSignalBlocker(self.provider_quick_combo)
+            provider_index = self.provider_quick_combo.findData(provider_id)
+            if provider_index >= 0:
+                self.provider_quick_combo.setCurrentIndex(provider_index)
+            del provider_blocker
+        provider_cls = PROVIDERS.get(provider_id)
+        quota_mode = bool(
+            data.quota_windows
+            or data.quota_metrics
+            or (provider_cls and provider_cls.supports_subscription_quota)
+        )
+        self.trend.show()
+        self.main_divider.show()
+        self.activity_card.show()
+        self.activity_mode_segment.setVisible(not quota_mode)
+
+        if quota_mode:
+            cards = (self.today_card, self.balance_card, self.month_card)
+            summaries: list[tuple[str, str, str]] = []
+            for window in data.quota_windows[:3]:
+                detail_parts = [
+                    f"剩余 {100 - window.used_percent:.0f}%",
+                    format_reset_countdown(window.resets_at),
+                ]
+                if window.detail:
+                    detail_parts.append(window.detail)
+                summaries.append(
+                    (
+                        window.title,
+                        "--" if loading else f"已用 {window.used_percent:.0f}%",
+                        " · ".join(detail_parts),
+                    )
+                )
+            for metric in data.quota_metrics:
+                if len(summaries) >= len(cards):
+                    break
+                summaries.append((metric.title, "--" if loading else metric.value, metric.detail))
+            if len(summaries) < len(cards) and data.account_plan:
+                summaries.append(("订阅套餐", "--" if loading else data.account_plan, data.account_label))
+            while len(summaries) < len(cards):
+                summaries.append(("Codex", "--", "正在读取额度" if loading else data.account_label))
+            for card, (title, value, detail) in zip(cards, summaries):
+                card.set_title(title)
+                card.set_values(value, detail, "")
+                card.value.setToolTip(detail)
+                card.detail.setVisible(bool(detail))
+            # Codex 没有账单金额口径；顶部右侧只展示本机近七天 Token 活动。
+            self.trend.set_rows(data.daily_usage, currency=self._currency, token_mode=True)
+            self._activity_view = "annual"
+            self.activity_stack.setCurrentIndex(0)
+            self.annual_activity_button.setChecked(True)
+            for control in self.minute_controls:
+                control.hide()
+            for button in self.minute_legend_buttons.values():
+                button.hide()
+            self.minute_estimate_label.hide()
+            self.activity_summary.setToolTip("根据本机 Codex 会话记录汇总，不上传会话内容")
+            self.activity_card.setFixedHeight(ANNUAL_ACTIVITY_SECTION_HEIGHT)
+            self._set_annual_activity_data(data)
+            self.statistics.set_quota_data(data)
+            self.setFixedHeight(ANNUAL_PANEL_HEIGHT)
+            self.activity_height_changed.emit(ANNUAL_PANEL_HEIGHT)
+            status, _color = self.status_summary(data, loading)
+            self.status_text.setText(status)
+            self.status_dot.set_role(self.status_role(data, loading))
+            self.updated_text.setText(self.relative_update_time(data))
+            return
+
+        # API billing providers retain the original amount, trend and Token activity view.
+        for card in (self.today_card, self.balance_card, self.month_card):
+            card.detail.hide()
+        self.activity_summary.setToolTip(self._minute_estimate_tooltip)
+        self._set_activity_view(self._activity_view)
 
         self._usage_card_loading = loading
         self._today_cost_cny = data.today_cost_cny
@@ -2339,25 +2535,14 @@ class MainPanel(QFrame):
             "",
         )
 
-        self.activity.set_activity(data.daily_usage)
-        source_days = [day for day in self.activity.days if day.has_source_data]
-        total = sum(day.token_count for day in source_days)
-        if not source_days:
-            summary = "暂无 Token 活动"
-        else:
-            first = min(day.date for day in source_days)
-            if first > self.activity.period.start:
-                summary = f"数据始于 {first.isoformat()} · 共 {compact_tokens(total)}"
-            else:
-                summary = f"过去 12 个月共使用 {compact_tokens(total)}"
-        self._annual_activity_summary = summary
+        self._set_annual_activity_data(data)
 
         self._update_minute_data(data, loading)
         for button in self.minute_legend_buttons.values():
             button.setEnabled(data.minute_usage_status != "unavailable")
         self._refresh_minute_control_colors()
 
-        self.trend.set_rows(data.daily_usage)
+        self.trend.set_rows(data.daily_usage, currency=self._currency)
         self.statistics.set_data(data)
         status, _color = self.status_summary(data, loading)
         self.status_text.setText(status)
@@ -2399,6 +2584,8 @@ class MainPanel(QFrame):
             return "API 服务异常", theme.danger
         if data.status == "not_configured":
             return "尚未配置凭据，请前往设置", theme.warning
+        if data.status == "ok" and data.quota_windows:
+            return "订阅额度已更新", theme.success
         if data.status == "ok" and data.today_tokens is None:
             return "连接正常，平台未提供按日明细", theme.success
         if data.status == "ok" and not any(day.get("tokens", 0) for day in data.daily_usage):

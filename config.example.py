@@ -21,7 +21,10 @@ MIMO_API_PLATFORM_PH = ""  # 兼容旧配置；完整 Cookie 已包含时留空
 MIMO_API_KEY = ""  # 推理 API Key；控制台用量查询不会使用
 MIMO_BASE = "https://platform.xiaomimimo.com"
 
-# Active provider: "deepseek" or "mimo"
+# Codex 默认读取本机 CLI 的 OAuth 登录文件；仅在凭据目录不是默认位置时填写。
+CODEX_HOME = ""
+
+# 可选值：deepseek、mimo、codex
 ACTIVE_PROVIDER = "deepseek"
 
 # Refresh interval in milliseconds

@@ -25,11 +25,12 @@ from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QPalette, Q
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMenu, QSystemTrayIcon, QWidget
 
 import config_manager
-from app_identity import APP_DISPLAY_NAME
-from deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
-from data.store import TokenData
+from api.providers import PROVIDERS
 from api.providers.base import FetchError
 from api.providers.mimo import MiMoProvider
+from app_identity import APP_DISPLAY_NAME
+from data.store import PerProviderData, TokenData
+from deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
 from ui.geometry import (
     WorkArea,
     clamp_window,
@@ -37,7 +38,7 @@ from ui.geometry import (
     expanded_panel_geometry,
 )
 from ui.qt_ball import FloatingUsageBall
-from ui.qt_panel import MainPanel, format_money
+from ui.qt_panel import MainPanel, format_money, format_reset_countdown
 from ui.qt_settings import SettingsWindow
 from ui.qt_theme import theme_controller
 from ui.qt_update import AppUpdateController
@@ -232,6 +233,7 @@ class FloatingWidget(QWidget):
         self.panel.header.released.connect(self._end_drag)
         self.panel.settings_requested.connect(self.open_settings)
         self.panel.refresh_requested.connect(self.refresh)
+        self.panel.provider_selected.connect(self._switch_provider)
         self.panel.close_requested.connect(self.collapse_panel)
         if hasattr(self.panel, "theme_requested"):
             self.panel.theme_requested.connect(self._request_theme_change)
@@ -752,6 +754,44 @@ class FloatingWidget(QWidget):
         self._reschedule_refresh()
         self.refresh()
 
+    @Slot(str)
+    def _switch_provider(self, provider_id: str) -> None:
+        provider_id = provider_id.strip().lower()
+        if not provider_id or provider_id == config_manager.get("ACTIVE_PROVIDER", ""):
+            return
+        try:
+            config_manager.save_config({"ACTIVE_PROVIDER": provider_id})
+        except Exception:
+            config_manager.logger().exception("Quick provider switch failed")
+            self.panel.update_data(self._data, self._refreshing)
+            return
+        self._sync_pricing_state(notify_transition=False)
+        provider_cls = PROVIDERS[provider_id]
+        self._prepare_scope_switch(
+            TokenData(
+                currency=provider_cls.default_currency,
+                per_provider=[
+                    PerProviderData(
+                        provider_id,
+                        provider_cls.name,
+                        currency=provider_cls.default_currency,
+                        status="loading",
+                    )
+                ],
+                status="loading",
+            )
+        )
+
+    def _prepare_scope_switch(self, data: TokenData) -> None:
+        with self._refresh_lock:
+            if self._refreshing:
+                # The in-flight result belongs to the previous provider.
+                # Invalidate its request id so it cannot briefly relabel stale data.
+                self._request_id += 1
+        self._data = data
+        self._apply_update()
+        self.refresh()
+
     def refresh(self) -> None:
         with self._refresh_lock:
             if self._closed:
@@ -902,10 +942,31 @@ class FloatingWidget(QWidget):
 
     def _apply_update(self) -> None:
         loading = self._refreshing and self._data.last_success_at is None
-        self.ball.set_values(
-            "--" if loading else format_money(self._data.today_cost_cny),
-            "--" if loading else format_money(self._data.balance_cny),
+        provider_id = (
+            self._data.per_provider[0].provider_id if self._data.per_provider else ""
         )
+        provider_cls = PROVIDERS.get(provider_id)
+        quota_mode = bool(
+            self._data.quota_windows
+            or (provider_cls and provider_cls.supports_subscription_quota)
+        )
+        if self._data.quota_windows:
+            primary = self._data.quota_windows[0]
+            self.ball.set_quota_state(
+                None if loading else 100 - primary.used_percent,
+                "正在更新额度" if loading else format_reset_countdown(primary.resets_at),
+                primary.title,
+            )
+        elif quota_mode:
+            # Codex 网络额度暂不可用时也不能回退成金额视图，否则会显示虚假的 ¥0。
+            self.ball.set_quota_state(None, "额度暂不可用", "周额度")
+        else:
+            self.ball.clear_quota_state()
+            self.ball.set_labels("今日使用", "余额")
+            self.ball.set_values(
+                "--" if loading else format_money(self._data.today_cost_cny, self._data.currency),
+                "--" if loading else format_money(self._data.balance_cny, self._data.currency),
+            )
         self.panel.set_refreshing(self._refreshing)
         if self._expanded:
             self.panel.update_data(self._data, loading)

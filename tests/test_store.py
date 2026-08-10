@@ -9,7 +9,15 @@ from zoneinfo import ZoneInfoNotFoundError
 
 os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 
-from api.providers.base import FetchError, ModelUsage, ProviderBalance, ProviderSummary
+from api.providers.base import (
+    FetchError,
+    ModelUsage,
+    ProviderBalance,
+    ProviderQuota,
+    ProviderSummary,
+    QuotaMetric,
+    QuotaWindow,
+)
 from data.store import (
     TokenData,
     cost_breakdown_for_day,
@@ -56,6 +64,9 @@ class FakeProvider:
 
     def fetch_balance(self):
         return ProviderBalance("CNY", Decimal("12.3"), 9), None
+
+    def fetch_quota(self):
+        return None, None
 
     def fetch_summary(self):
         return ProviderSummary(Decimal("1.2"), 100), None
@@ -165,6 +176,43 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(data.monthly_usage_tokens, 50)
         self.assertAlmostEqual(data.monthly_cost_cny, .43)
+
+    def test_subscription_quota_is_propagated_without_billing_data(self):
+        class QuotaProvider(FakeProvider):
+            id = "codex"
+            name = "Codex"
+            supports_daily_usage = False
+            supports_cost = False
+
+            def fetch_balance(self):
+                return None, None
+
+            def fetch_summary(self):
+                return None, None
+
+            def fetch_quota(self):
+                return ProviderQuota(
+                    windows=(
+                        QuotaWindow(
+                            "codex-weekly", "每周额度", 25, window_minutes=10_080
+                        ),
+                    ),
+                    metrics=(QuotaMetric("Credits", "12"),),
+                    activity=(("2026-07-03", 1234),),
+                    statistics=(QuotaMetric("累计 Token 数", "0.12万"),),
+                    account_label="a@example.com",
+                    plan="pro",
+                ), None
+
+        data = self.fetch_with(QuotaProvider())
+
+        self.assertEqual(data.status, "ok")
+        self.assertEqual(data.quota_windows[0].used_percent, 25)
+        self.assertEqual(data.quota_metrics[0].value, "12")
+        self.assertEqual(data.quota_statistics[0].value, "0.12万")
+        self.assertEqual(data.daily_usage[0]["tokens"], 1234)
+        self.assertEqual(data.account_label, "a@example.com")
+        self.assertEqual(data.account_plan, "pro")
 
     def test_lightweight_mimo_fetch_only_requests_current_month(self):
         provider = FakeProvider(payloads=[payload("2026-07-03", 30, ".23")])

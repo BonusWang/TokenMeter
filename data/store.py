@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import api.deepseek as ds  # 兼容 v1.0 中对 data.store.ds 的测试和扩展引用。
 import config_manager
 from api.providers import active_providers
-from api.providers.base import FetchError, ModelUsage
+from api.providers.base import FetchError, ModelUsage, QuotaMetric, QuotaWindow
 from data import history
 
 TOKEN_TYPES = {
@@ -278,6 +278,7 @@ def provider_usage_day(provider_id: str, observed_at: datetime) -> date:
 class PerProviderData:
     provider_id: str
     provider_name: str
+    currency: str = "CNY"
     balance_cny: float | None = None
     balance_tokens: int | None = None
     monthly_usage_tokens: int | None = None
@@ -288,6 +289,11 @@ class PerProviderData:
     weekly_cost_cny: float | None = None
     total_cost_cny: float | None = None
     per_model: list[dict[str, Any]] = field(default_factory=list)
+    quota_windows: list[QuotaWindow] = field(default_factory=list)
+    quota_metrics: list[QuotaMetric] = field(default_factory=list)
+    quota_statistics: list[QuotaMetric] = field(default_factory=list)
+    account_label: str = ""
+    account_plan: str = ""
     errors: list[FetchError] = field(default_factory=list)
     status: str = "loading"
     is_stale: bool = False
@@ -295,6 +301,7 @@ class PerProviderData:
 
 @dataclass
 class TokenData:
+    currency: str = "CNY"
     balance_cny: float | None = None
     balance_tokens: int | None = 0
     monthly_usage_tokens: int | None = 0
@@ -308,6 +315,11 @@ class TokenData:
     per_model_cost: list[dict[str, Any]] = field(default_factory=list)
     model_stats: dict[str, ModelUsage] = field(default_factory=dict)
     per_provider: list[PerProviderData] = field(default_factory=list)
+    quota_windows: list[QuotaWindow] = field(default_factory=list)
+    quota_metrics: list[QuotaMetric] = field(default_factory=list)
+    quota_statistics: list[QuotaMetric] = field(default_factory=list)
+    account_label: str = ""
+    account_plan: str = ""
     status: str = "loading"
     last_success_at: datetime | None = None
     last_attempt_at: datetime | None = None
@@ -363,6 +375,7 @@ class TokenData:
             )
         else:
             for source, fetcher in (
+                ("订阅额度", provider.fetch_quota),
                 ("账户余额", provider.fetch_balance),
                 ("账户摘要", provider.fetch_summary),
             ):
@@ -436,9 +449,19 @@ class TokenData:
         data.errors = []
         data.last_attempt_at = datetime.now()
         previous_per = data.per_provider[0] if data.per_provider else None
-        per = copy.deepcopy(previous_per) if previous_per else PerProviderData(provider.id, provider.name)
+        per = (
+            copy.deepcopy(previous_per)
+            if previous_per
+            else PerProviderData(provider.id, provider.name)
+        )
         per.provider_id = provider.id
         per.provider_name = provider.name
+        per.currency = str(getattr(provider, "default_currency", "CNY") or "CNY").upper()
+        per.quota_windows = []
+        per.quota_metrics = []
+        per.quota_statistics = []
+        per.account_label = ""
+        per.account_plan = ""
         per.errors = []
         per.status = "loading"
         per.is_stale = False
@@ -479,12 +502,38 @@ class TokenData:
 
         if not provider.is_configured():
             # 删除或切换凭据后不能继续展示旧账号数据，否则会造成“仍已登录”的错觉。
-            per = PerProviderData(provider.id, provider.name, status="not_configured")
+            per = PerProviderData(
+                provider.id,
+                provider.name,
+                currency=str(getattr(provider, "default_currency", "CNY") or "CNY").upper(),
+                status="not_configured",
+            )
             per.errors.append(FetchError("NOT_CONFIGURED", provider.name, f"尚未配置 {provider.name} 凭据"))
             data.daily_usage = []
             data.last_success_at = None
             data.last_updated = ""
         else:
+            try:
+                quota, quota_error = provider.fetch_quota()
+            except Exception as exc:
+                config_manager.logger().exception("Quota fetch failed for %s", provider.id)
+                quota, quota_error = None, FetchError(
+                    "UNKNOWN_ERROR", "订阅额度", str(exc)
+                )
+            if quota is not None:
+                per.quota_windows = list(quota.windows)
+                per.quota_metrics = list(quota.metrics)
+                per.quota_statistics = list(quota.statistics)
+                per.account_label = quota.account_label
+                per.account_plan = quota.plan
+                data.daily_usage = [
+                    {"date": usage_day, "tokens": tokens, "cost_cny": 0}
+                    for usage_day, tokens in quota.activity
+                ]
+                successes += 1
+            if quota_error:
+                per.errors.append(quota_error)
+
             try:
                 balance, balance_error = provider.fetch_balance()
             except Exception as exc:
@@ -493,6 +542,7 @@ class TokenData:
             if balance is not None:
                 per.balance_cny = float(balance.amount) if balance.amount is not None else None
                 per.balance_tokens = int(balance.token_estimate)
+                per.currency = str(balance.currency or per.currency).upper()
                 successes += 1
             if balance_error:
                 per.errors.append(balance_error)
@@ -645,11 +695,8 @@ class TokenData:
                 minute_status = "failed" if payload_errors else "empty"
 
             try:
-                data.daily_usage = (
-                    history.recent_daily(371, provider.id)
-                    if provider.supports_daily_usage
-                    else []
-                )
+                if provider.supports_daily_usage:
+                    data.daily_usage = history.recent_daily(371, provider.id)
                 per.total_cost_cny = (
                     float(history.total_cost(provider.id))
                     if provider.supports_cost
@@ -667,6 +714,7 @@ class TokenData:
                 per.is_stale = previous_per is not None
 
         data.per_provider = [per]
+        data.currency = per.currency
         data.balance_cny = per.balance_cny
         data.balance_tokens = per.balance_tokens
         data.monthly_usage_tokens = per.monthly_usage_tokens
@@ -678,6 +726,11 @@ class TokenData:
         data.total_cost_cny = per.total_cost_cny
         data.per_model_amount = copy.deepcopy(per.per_model)
         data.per_model_cost = copy.deepcopy(per.per_model)
+        data.quota_windows = list(per.quota_windows)
+        data.quota_metrics = list(per.quota_metrics)
+        data.quota_statistics = list(per.quota_statistics)
+        data.account_label = per.account_label
+        data.account_plan = per.account_plan
         data.errors = list(per.errors)
         data.minute_usage = minute_rows
         data.minute_usage_status = minute_status
