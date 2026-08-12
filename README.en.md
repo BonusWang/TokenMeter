@@ -79,7 +79,7 @@ python main.py
 3. Enter a Bearer token, Cookie, or optional DeepSeek API key. For MiMo, “Get MiMo Cookie” also extracts `api-platform_ph` automatically.
 4. Save and refresh. The default refresh interval is 60 seconds.
 
-`config.example.py` only documents fields; do not copy it to `config.py`. A legacy `config.py` is migrated on first launch when possible.
+`examples/config.example.py` only documents fields; do not copy it to `config.py`. A legacy `config.py` is migrated on first launch when possible.
 
 ## Local data and privacy
 
@@ -107,7 +107,7 @@ Run Qt tests in an available Windows desktop session when possible.
 
 ```powershell
 python -m pip install pyinstaller
-.\.venv\Scripts\pyinstaller.exe --clean --noconfirm TokenMeter.spec
+.\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\pyinstaller\TokenMeter.spec
 python scripts/build_release.py
 ```
 
@@ -117,15 +117,22 @@ The release script produces the `dist\TokenMeter\` onedir tree. With Inno Setup 
 
 ```text
 TokenMeter/
-├── api/providers/       # DeepSeek and Xiaomi MiMo adapters
-├── data/                # Aggregation and SQLite history
-├── tests/               # Unit and Qt tests
+├── api/                 # Platform APIs, providers, and pricing rules
+├── config/              # Configuration, credentials, migration, and runtime state
+├── core/                # Application identity and shared metadata
+├── data/                # Data directories, aggregation, and SQLite history
+├── updater/             # Update client and standalone updater
 ├── ui/                  # PySide6 interface
-├── app_identity.py      # Display and compatibility identities
-├── config_manager.py    # Configuration, credentials, and logging
-├── main.py              # Application entry point
-└── TokenMeter.spec      # PyInstaller configuration
+├── packaging/           # PyInstaller, installer, and Windows version resources
+├── scripts/             # Build and release automation
+├── docs/                # Project docs, task archives, and images
+├── examples/            # Example configuration
+├── release-notes/       # Version release notes
+├── tests/               # Unit and Qt tests
+└── main.py              # Application entry point
 ```
+
+See [Project structure](docs/PROJECT_STRUCTURE.md) for the complete layout.
 
 ## Troubleshooting
 

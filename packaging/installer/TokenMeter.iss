@@ -18,9 +18,9 @@ PrivilegesRequired=lowest
 UsePreviousAppDir=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-OutputDir=..\dist-installer
+OutputDir=..\..\dist-installer
 OutputBaseFilename=TokenMeter-Setup-v{#MyAppVersion}-x64
-SetupIconFile=..\assets\TokenMeter.ico
+SetupIconFile=..\..\assets\TokenMeter.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
@@ -39,7 +39,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; The build output never contains user data; the exclusion adds defense in depth.
-Source: "..\dist\TokenMeter\*"; DestDir: "{app}"; Excludes: "data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\dist\TokenMeter\*"; DestDir: "{app}"; Excludes: "data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{userdesktop}\TokenMeter"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

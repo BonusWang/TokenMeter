@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from data_directory import migrate_legacy_data
+from data.directory import migrate_legacy_data
 
 
 def normalize_data_dir(value: str | os.PathLike[str]) -> Path:

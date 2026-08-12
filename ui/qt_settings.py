@@ -36,8 +36,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import config_manager
-from app_identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
+from config import runtime as config_manager
+from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
 from data.store import TokenData

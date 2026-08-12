@@ -9,7 +9,6 @@ from typing import Any
 
 import api.deepseek as platform_api
 import api.deepseek_official as official_api
-import config_manager
 from api import browser_cookie
 from api.deepseek import APIError
 from api.providers.base import (
@@ -20,6 +19,7 @@ from api.providers.base import (
     _decimal,
     safe_int,
 )
+from config import runtime as config_manager
 
 TOKEN_TYPES = {
     "PROMPT_CACHE_HIT_TOKEN",

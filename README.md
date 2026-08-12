@@ -92,7 +92,7 @@ python -m pip install -r requirements-build.txt
 3. Codex 默认读取本机 CLI 登录，仅在使用非默认位置时点击“选择…”指定 Codex 目录；DeepSeek 填写 API Key/控制台凭据；MiMo 可点击“一键获取 MiMo Cookie”。
 4. 保存设置并刷新。默认刷新间隔为 60 秒。
 
-`config.example.py` 仅展示配置项；无需复制为 `config.py`。旧版 `config.py` 会在首次启动时尝试迁移。
+`examples/config.example.py` 仅展示配置项；无需复制为 `config.py`。旧版 `config.py` 会在首次启动时尝试迁移。
 
 ## 本地数据与隐私
 
@@ -122,7 +122,7 @@ Qt 测试建议在可用的 Windows 桌面会话中运行。
 
 ```powershell
 python -m pip install -r requirements-build.txt
-.\.venv\Scripts\pyinstaller.exe --clean --noconfirm TokenMeter.spec
+.\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\pyinstaller\TokenMeter.spec
 python scripts/build_release.py
 ```
 
@@ -132,15 +132,22 @@ python scripts/build_release.py
 
 ```text
 TokenMeter/
-├── api/providers/       # 各 AI 平台的 Provider 适配器
-├── data/                # 聚合与 SQLite 历史缓存
-├── tests/               # 单元与 Qt 测试
+├── api/                 # 平台 API、Provider 与计价规则
+├── config/              # 配置、凭据、迁移与运行时状态
+├── core/                # 应用身份等基础元数据
+├── data/                # 数据目录、聚合与 SQLite 历史缓存
+├── updater/             # 更新客户端与独立更新器
 ├── ui/                  # PySide6 界面
-├── app_identity.py      # 展示品牌与兼容身份
-├── config_manager.py    # 配置、凭据与日志
-├── main.py              # 应用入口
-└── TokenMeter.spec      # PyInstaller 配置
+├── packaging/           # PyInstaller、安装器与 Windows 版本资源
+├── scripts/             # 构建与发布脚本
+├── docs/                # 项目文档、任务归档与图片
+├── examples/            # 示例配置
+├── release-notes/       # 版本发布说明
+├── tests/               # 单元与 Qt 测试
+└── main.py              # 应用入口
 ```
+
+完整说明见 [项目目录结构](docs/PROJECT_STRUCTURE.md)。
 
 ## 故障排查
 

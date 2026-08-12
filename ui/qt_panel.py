@@ -54,9 +54,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import config_manager
+from config import runtime as config_manager
 from api.providers import PROVIDERS, list_providers
-from app_identity import APP_DISPLAY_NAME
+from core.identity import APP_DISPLAY_NAME
 from data.store import TokenData
 from ui.activity import compact_tokens
 from ui.qt_heatmap import TokenActivityHeatmap

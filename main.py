@@ -6,8 +6,8 @@ import ctypes
 import sys
 from ctypes import wintypes
 
-import config_manager
-from app_identity import APP_DISPLAY_NAME, APP_VERSION, SINGLE_INSTANCE_MUTEX
+from config import runtime as config_manager
+from core.identity import APP_DISPLAY_NAME, APP_VERSION, SINGLE_INSTANCE_MUTEX
 
 __version__ = APP_VERSION
 
@@ -86,7 +86,7 @@ def main() -> int:
     try:
         config_manager.initialize()
         # 更新清理依赖已解析的数据目录，但必须先于 QApplication 执行。
-        from app_update import cleanup_pending_update
+        from updater.client import cleanup_pending_update
 
         cleanup_pending_update()
         return int(App().run())

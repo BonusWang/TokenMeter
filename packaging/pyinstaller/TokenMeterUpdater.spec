@@ -2,8 +2,8 @@
 
 
 a = Analysis(
-    ["updater_main.py"],
-    pathex=[],
+    ["../../updater/main.py"],
+    pathex=["../.."],
     binaries=[],
     datas=[],
     hiddenimports=[],
@@ -36,13 +36,13 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
-    version="updater_version_info.txt",
+    version="../windows/updater_version_info.txt",
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=["assets/TokenMeter.ico"],
+    icon=["../../assets/TokenMeter.ico"],
 )
 
 coll = COLLECT(

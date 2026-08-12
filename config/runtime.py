@@ -15,8 +15,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-import data_directory
-from app_identity import APP_STORAGE_NAME, SINGLE_INSTANCE_MUTEX
 from config import state as state_store
 from config.credentials import (
     credential_target as _credential_target,  # noqa: F401 - 旧私有入口兼容
@@ -54,7 +52,9 @@ from config.store import (
 from config.store import (
     public_values as _public_values,
 )
-from data_directory import (
+from core.identity import APP_STORAGE_NAME, SINGLE_INSTANCE_MUTEX
+from data import directory as data_directory
+from data.directory import (
     application_dir,
     legacy_data_dir,
     resolve_data_dir,

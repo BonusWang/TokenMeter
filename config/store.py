@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from api.deepseek_pricing import configured_periods, parse_time_text
 from config.defaults import DEFAULT_CONFIG, FIELD_META, OFFICIAL_HOSTS, SECRET_KEYS
-from deepseek_pricing import configured_periods, parse_time_text
 
 
 def validate_value(key: str, value: Any) -> Any:

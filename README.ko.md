@@ -77,7 +77,7 @@ python main.py
 3. Bearer Token, Cookie 또는 선택적 DeepSeek API Key를 입력합니다. MiMo Cookie 가져오기 기능은 `api-platform_ph`도 자동 추출합니다.
 4. 저장 후 새로 고칩니다. 기본 새로 고침 간격은 60초입니다.
 
-`config.example.py`는 필드 설명용이므로 `config.py`로 복사할 필요가 없습니다. 기존 `config.py`는 첫 실행 시 가능한 경우 이전됩니다.
+`examples/config.example.py`는 필드 설명용이므로 `config.py`로 복사할 필요가 없습니다. 기존 `config.py`는 첫 실행 시 가능한 경우 이전됩니다.
 
 ## 로컬 데이터 및 개인정보
 
@@ -99,7 +99,7 @@ Qt 테스트는 사용 가능한 Windows 데스크톱 세션에서 실행하는 
 
 ```powershell
 python -m pip install pyinstaller
-.\.venv\Scripts\pyinstaller.exe --clean --noconfirm TokenMeter.spec
+.\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\pyinstaller\TokenMeter.spec
 python scripts/build_release.py
 ```
 
@@ -109,15 +109,22 @@ python scripts/build_release.py
 
 ```text
 TokenMeter/
-├── api/providers/       # DeepSeek 및 Xiaomi MiMo 어댑터
-├── data/                # 집계 및 SQLite 기록
-├── tests/               # 단위 및 Qt 테스트
+├── api/                 # 플랫폼 API, Provider 및 요금 규칙
+├── config/              # 설정, 자격 증명, 마이그레이션 및 런타임 상태
+├── core/                # 앱 ID 및 공용 메타데이터
+├── data/                # 데이터 디렉터리, 집계 및 SQLite 기록
+├── updater/             # 업데이트 클라이언트 및 독립 업데이터
 ├── ui/                  # PySide6 인터페이스
-├── app_identity.py      # 표시 브랜드 및 호환 ID
-├── config_manager.py    # 설정, 자격 증명 및 로그
-├── main.py              # 앱 진입점
-└── TokenMeter.spec      # PyInstaller 설정
+├── packaging/           # PyInstaller, 설치 프로그램 및 Windows 리소스
+├── scripts/             # 빌드 및 릴리스 자동화
+├── docs/                # 문서, 작업 보관 및 이미지
+├── examples/            # 설정 예제
+├── release-notes/       # 릴리스 노트
+├── tests/               # 단위 및 Qt 테스트
+└── main.py              # 앱 진입점
 ```
+
+전체 내용은 [프로젝트 구조](docs/PROJECT_STRUCTURE.md)를 참고하세요.
 
 ## 문제 해결
 

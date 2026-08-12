@@ -15,18 +15,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app_identity import (
+from core.identity import (
     APP_VERSION,
     MAIN_EXECUTABLE_NAME,
     UPDATER_EXECUTABLE_NAME,
 )
 
 DIST_DIR = ROOT / "dist"
-MAIN_SPEC = ROOT / "TokenMeter.spec"
-UPDATER_SPEC = ROOT / "TokenMeterUpdater.spec"
+MAIN_SPEC = ROOT / "packaging" / "pyinstaller" / "TokenMeter.spec"
+UPDATER_SPEC = ROOT / "packaging" / "pyinstaller" / "TokenMeterUpdater.spec"
 APP_DIST_DIR = DIST_DIR / "TokenMeter"
 UPDATER_DIST_DIR = DIST_DIR / "TokenMeterUpdater"
-INSTALLER_SCRIPT = ROOT / "installer" / "TokenMeter.iss"
+INSTALLER_SCRIPT = ROOT / "packaging" / "installer" / "TokenMeter.iss"
 INSTALLER_OUTPUT_DIR = ROOT / "dist-installer"
 INSTALLER_PATH = INSTALLER_OUTPUT_DIR / f"TokenMeter-Setup-v{APP_VERSION}-x64.exe"
 SHA_FILE = INSTALLER_OUTPUT_DIR / "SHA256SUMS.txt"

@@ -1,22 +1,14 @@
-"""Shared application identity and release metadata."""
+"""Backward-compatible alias for :mod:`core.identity`."""
 
 from __future__ import annotations
 
-APP_DISPLAY_NAME = "TokenMeter"
-APP_STORAGE_NAME = "TokenSpider"
-APP_VERSION = "1.11.4"
+import sys
+from typing import TYPE_CHECKING
 
-# Keep the legacy storage and mutex identities so upgrades retain user data,
-# credentials, and single-instance coordination across every public rename.
-SINGLE_INSTANCE_MUTEX = "Local\\TokenSpider.SingleInstance"
+if TYPE_CHECKING:
+    from core.identity import *  # noqa: F403 - 静态检查需要识别旧入口的公开常量
+else:
+    from core import identity as _identity
 
-MAIN_EXECUTABLE_NAME = "TokenMeter.exe"
-UPDATER_EXECUTABLE_NAME = "TokenMeterUpdater.exe"
-SETUP_RELEASE_ASSET_TEMPLATE = "TokenMeter-Setup-v{version}-x64.exe"
-SHA256_RELEASE_ASSET_NAME = "SHA256SUMS.txt"
-
-GITHUB_REPOSITORY = "zensoku142/TokenMeter"
-GITHUB_REPOSITORY_URL = f"https://github.com/{GITHUB_REPOSITORY}"
-GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
-GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases"
-GITHUB_LATEST_RELEASE_API_URL = f"{GITHUB_RELEASES_API_URL}/latest"
+    # 保留模块对象别名，使旧脚本对常量的读取与新包路径始终指向同一份定义。
+    sys.modules[__name__] = _identity

@@ -10,7 +10,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-import config_manager
+from config import runtime as config_manager
 
 
 @dataclass(frozen=True)

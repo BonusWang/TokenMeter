@@ -36,7 +36,7 @@ from urllib.parse import (
 
 import requests
 
-import config_manager
+from config import runtime as config_manager
 from api import browser_cookie
 from api.providers.base import (
     FetchError,

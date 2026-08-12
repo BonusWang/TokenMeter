@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from app_identity import APP_DISPLAY_NAME
+from core.identity import APP_DISPLAY_NAME
 from ui.qt_theme import app_icon, theme_controller
 
 

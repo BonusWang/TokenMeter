@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = (ROOT / "installer" / "TokenMeter.iss").read_text(encoding="utf-8")
+SCRIPT = (ROOT / "packaging" / "installer" / "TokenMeter.iss").read_text(encoding="utf-8")
 
 
 def test_installer_has_stable_per_user_identity_and_paths():
@@ -12,11 +12,13 @@ def test_installer_has_stable_per_user_identity_and_paths():
     assert "UsePreviousAppDir=yes" in SCRIPT
     assert 'Filename: "{app}\\{#MyAppExeName}"' in SCRIPT
     assert 'MessagesFile: "languages\\ChineseSimplified.isl"' in SCRIPT
-    assert (ROOT / "installer" / "languages" / "ChineseSimplified.isl").is_file()
+    assert (
+        ROOT / "packaging" / "installer" / "languages" / "ChineseSimplified.isl"
+    ).is_file()
 
 
 def test_installer_uses_tokenmeter_brand_icon():
-    assert "SetupIconFile=..\\assets\\TokenMeter.ico" in SCRIPT
+    assert "SetupIconFile=..\\..\\assets\\TokenMeter.ico" in SCRIPT
     assert (ROOT / "assets" / "TokenMeter.ico").is_file()
 
 
@@ -29,7 +31,7 @@ def test_installer_creates_both_shortcuts_and_preserves_data():
 
 
 def test_installer_packages_the_complete_onedir_tree():
-    assert 'Source: "..\\dist\\TokenMeter\\*"' in SCRIPT
+    assert 'Source: "..\\..\\dist\\TokenMeter\\*"' in SCRIPT
     assert "recursesubdirs" in SCRIPT
     assert "createallsubdirs" in SCRIPT
 

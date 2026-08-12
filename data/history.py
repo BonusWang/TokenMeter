@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterator
 
-import config_manager
+from config import runtime as config_manager
 
 DB_PATH = config_manager.CONFIG_DIR / "usage.db"
 MINUTE_USAGE_CLEANUP_GRACE_MULTIPLIER = 2

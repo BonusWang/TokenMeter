@@ -24,13 +24,13 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QPalette, QRegion
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMenu, QSystemTrayIcon, QWidget
 
-import config_manager
+from config import runtime as config_manager
 from api.providers import PROVIDERS
 from api.providers.base import FetchError
 from api.providers.mimo import MiMoProvider
-from app_identity import APP_DISPLAY_NAME
+from core.identity import APP_DISPLAY_NAME
 from data.store import PerProviderData, TokenData
-from deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
+from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
 from ui.geometry import (
     WorkArea,
     clamp_window,

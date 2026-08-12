@@ -124,7 +124,7 @@ class Provider:
     def config_get(self, key: str, default: Any = None) -> Any:
         if self._config is not None:
             return self._config.get(key, default)
-        import config_manager
+        from config import runtime as config_manager
 
         return config_manager.get(key, default)
 

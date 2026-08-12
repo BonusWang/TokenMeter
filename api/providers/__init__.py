@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import Any
 
-import config_manager
+from config import runtime as config_manager
 from api.providers.base import (
     FetchError,
     ModelUsage,

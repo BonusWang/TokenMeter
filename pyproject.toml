@@ -6,9 +6,12 @@ include = [
     "config_manager.py",
     "config/*.py",
     "api/deepseek.py",
+    "api/deepseek_pricing.py",
     "api/providers/base.py",
     "api/providers/deepseek.py",
-    "app_update.py",
+    "core/identity.py",
+    "data/directory.py",
+    "updater/*.py",
 ]
 
 [tool.ruff.lint]

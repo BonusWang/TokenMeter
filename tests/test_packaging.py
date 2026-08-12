@@ -21,7 +21,7 @@ def _call_keywords(path: str, name: str) -> dict[str, object]:
 
 
 def test_pyqtgraph_startup_modules_are_packaged():
-    options = _call_keywords("TokenMeter.spec", "Analysis")
+    options = _call_keywords("packaging/pyinstaller/TokenMeter.spec", "Analysis")
     excluded = set(options["excludes"])
     required = {
         "pyqtgraph.imageview",
@@ -37,29 +37,32 @@ def test_pyqtgraph_startup_modules_are_packaged():
 
 
 def test_main_executable_uses_stable_name_and_project_icon():
-    options = _call_keywords("TokenMeter.spec", "EXE")
+    options = _call_keywords("packaging/pyinstaller/TokenMeter.spec", "EXE")
 
     assert options["name"] == "TokenMeter"
-    assert options["icon"] == ["assets/TokenMeter.ico"]
+    assert options["icon"] == ["../../assets/TokenMeter.ico"]
 
 
 def test_runtime_icon_is_packaged_for_qt_windows_and_tray():
-    options = _call_keywords("TokenMeter.spec", "Analysis")
+    options = _call_keywords("packaging/pyinstaller/TokenMeter.spec", "Analysis")
 
-    assert ("assets/TokenMeter.ico", "assets") in options["datas"]
+    assert ("../../assets/TokenMeter.ico", "assets") in options["datas"]
 
 
 def test_updater_executable_is_packaged_separately():
-    options = _call_keywords("TokenMeterUpdater.spec", "EXE")
+    options = _call_keywords("packaging/pyinstaller/TokenMeterUpdater.spec", "EXE")
 
     assert options["name"] == "TokenMeterUpdater"
-    assert options["icon"] == ["assets/TokenMeter.ico"]
+    assert options["icon"] == ["../../assets/TokenMeter.ico"]
 
 
 def test_both_specs_use_onedir_collect_layout():
-    assert _call_keywords("TokenMeter.spec", "COLLECT")["name"] == "TokenMeter"
-    assert _call_keywords("TokenMeterUpdater.spec", "COLLECT")["name"] == "TokenMeterUpdater"
-    assert _call_keywords("TokenMeter.spec", "EXE")["exclude_binaries"] is True
+    assert _call_keywords("packaging/pyinstaller/TokenMeter.spec", "COLLECT")["name"] == "TokenMeter"
+    assert (
+        _call_keywords("packaging/pyinstaller/TokenMeterUpdater.spec", "COLLECT")["name"]
+        == "TokenMeterUpdater"
+    )
+    assert _call_keywords("packaging/pyinstaller/TokenMeter.spec", "EXE")["exclude_binaries"] is True
 
 
 def test_release_build_removes_smoke_test_data():

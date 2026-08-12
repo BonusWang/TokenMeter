@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import config_manager
+from config import runtime as config_manager
 
 
 _CDP_PORT_RANGE = range(9222, 9323)

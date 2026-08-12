@@ -7,7 +7,7 @@ import os
 from contextlib import suppress
 from ctypes import wintypes
 
-from app_identity import APP_STORAGE_NAME
+from core.identity import APP_STORAGE_NAME
 
 
 class _CREDENTIALW(ctypes.Structure):

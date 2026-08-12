@@ -131,8 +131,8 @@ TokenMeter\
 
 至少检查：
 
-- `TokenMeter.spec`
-- `TokenMeterUpdater.spec`
+- `packaging\pyinstaller\TokenMeter.spec`
+- `packaging\pyinstaller\TokenMeterUpdater.spec`
 - `scripts/build_release.py`
 - `.github/workflows/release.yml`
 - 相关测试
@@ -200,7 +200,7 @@ dist\TokenMeter\TokenMeter.exe
 ## 新增文件
 
 ```text
-installer\TokenMeter.iss
+packaging\installer\TokenMeter.iss
 ```
 
 ## 安装包名称
@@ -774,7 +774,7 @@ Windows runner 通常可安装或调用 Inno Setup 编译器。
 构建命令参考：
 
 ```powershell
-iscc installer\TokenMeter.iss
+iscc packaging\installer\TokenMeter.iss
 ```
 
 不得在测试失败时继续发布。
@@ -926,7 +926,7 @@ TokenMeter 会下载安装版更新，并覆盖程序文件。
 将本文件放在仓库根目录，然后发送：
 
 ```text
-请读取仓库根目录的《TokenMeter_Windows安装版与旧数据安全迁移任务清单.md》，
+请读取 `docs/tasks/windows-installer-and-legacy-data-migration.md`，
 并直接在当前 TokenMeter 仓库中实现标准 Windows 安装版。
 
 目标：

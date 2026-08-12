@@ -809,7 +809,7 @@ def app_icon(size: int = 64) -> QIcon:
         return icon
 
     # Keep startup resilient in partial source checkouts or malformed packages;
-    # release builds include the ICO explicitly through TokenMeter.spec.
+    # release builds include the ICO explicitly through packaging/pyinstaller/TokenMeter.spec.
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)

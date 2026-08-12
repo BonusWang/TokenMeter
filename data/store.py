@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import api.deepseek as ds  # 兼容 v1.0 中对 data.store.ds 的测试和扩展引用。
-import config_manager
+from config import runtime as config_manager
 from api.providers import active_providers
 from api.providers.base import FetchError, ModelUsage, QuotaMetric, QuotaWindow
 from data import history

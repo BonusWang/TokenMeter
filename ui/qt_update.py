@@ -21,9 +21,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import config_manager
-from app_identity import APP_VERSION
-from app_update import (
+from config import runtime as config_manager
+from core.identity import APP_VERSION
+from updater.client import (
     CheckResult,
     DownloadBundle,
     DownloadCancelled,
@@ -38,7 +38,7 @@ from app_update import (
     skipped_version,
     status_summary,
 )
-from app_identity import MAIN_EXECUTABLE_NAME
+from core.identity import MAIN_EXECUTABLE_NAME
 
 
 class UpdateCheckWorker(QThread):
@@ -235,7 +235,7 @@ class AppUpdateController(QObject):
         version = str(state.get("latest_version") or "").strip()
         self._latest_release = None
         if version:
-            from app_update import _release_from_state  # local import to avoid a cycle during init
+            from updater.client import _release_from_state  # local import to avoid a cycle during init
 
             self._latest_release = _release_from_state(state)
         self.latest_release_changed.emit(self._latest_release)
