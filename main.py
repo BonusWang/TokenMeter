@@ -7,6 +7,7 @@ import sys
 from ctypes import wintypes
 
 from config import runtime as config_manager
+from core.autostart import AutostartError, sync_autostart
 from core.identity import APP_DISPLAY_NAME, APP_VERSION, SINGLE_INSTANCE_MUTEX
 
 __version__ = APP_VERSION
@@ -85,6 +86,11 @@ def main() -> int:
         return 0
     try:
         config_manager.initialize()
+        try:
+            sync_autostart(bool(config_manager.get("AUTO_START_ENABLED", False)))
+        except AutostartError:
+            # 注册表异常不能阻止手动启动；设置页保存时仍会给出可见错误。
+            config_manager.logger().warning("Windows autostart state could not be synchronized")
         # 更新清理依赖已解析的数据目录，但必须先于 QApplication 执行。
         from updater.client import cleanup_pending_update
 

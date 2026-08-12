@@ -2061,6 +2061,82 @@ def test_settings_exposes_panel_auto_collapse_toggle():
     window.close()
 
 
+def test_settings_exposes_persisted_autostart_toggle():
+    values = {
+        **config_manager.all_config(),
+        "AUTO_START_ENABLED": True,
+    }
+    with (
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+    ):
+        window = SettingsWindow()
+
+    assert window.autostart_check.isChecked()
+    assert window.autostart_check.text() == "开机后自动运行 TokenMeter"
+    window.autostart_check.setChecked(False)
+    assert window._values()["AUTO_START_ENABLED"] is False
+    window.close()
+
+
+def test_settings_applies_autostart_change_when_saving():
+    values = {
+        **config_manager.all_config(),
+        "AUTO_START_ENABLED": False,
+    }
+    with (
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+        patch("ui.qt_settings.config_manager.pending_data_dir", return_value=None),
+        patch("ui.qt_settings.config_manager.data_dir_migration_error", return_value=""),
+    ):
+        window = SettingsWindow()
+        window.autostart_check.setChecked(True)
+        with (
+            patch("ui.qt_settings.config_manager.get", return_value=False),
+            patch(
+                "ui.qt_settings.config_manager.validate_data_dir_target",
+                return_value=config_manager.CONFIG_DIR.resolve(strict=False),
+            ),
+            patch("ui.qt_settings.config_manager.save_config") as save_config,
+            patch("ui.qt_settings.set_autostart_enabled") as set_autostart_enabled,
+        ):
+            window._save()
+
+    set_autostart_enabled.assert_called_once_with(True)
+    assert save_config.call_args.args[0]["AUTO_START_ENABLED"] is True
+    window.close()
+
+
+def test_settings_rolls_back_autostart_when_config_save_fails():
+    values = {
+        **config_manager.all_config(),
+        "AUTO_START_ENABLED": False,
+    }
+    with (
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+        patch("ui.qt_settings.config_manager.pending_data_dir", return_value=None),
+        patch("ui.qt_settings.config_manager.data_dir_migration_error", return_value=""),
+    ):
+        window = SettingsWindow()
+        window.autostart_check.setChecked(True)
+        with (
+            patch("ui.qt_settings.config_manager.get", return_value=False),
+            patch(
+                "ui.qt_settings.config_manager.validate_data_dir_target",
+                return_value=config_manager.CONFIG_DIR.resolve(strict=False),
+            ),
+            patch("ui.qt_settings.config_manager.save_config", side_effect=OSError("failed")),
+            patch("ui.qt_settings.set_autostart_enabled") as set_autostart_enabled,
+        ):
+            window._save()
+
+    assert [call.args for call in set_autostart_enabled.call_args_list] == [(True,), (False,)]
+    assert "配置已回滚" in window.save_feedback.text()
+    window.close()
+
+
 def test_settings_exposes_minute_usage_retention_days():
     values = {
         **config_manager.all_config(),

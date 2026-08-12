@@ -362,6 +362,12 @@ class ConfigTests(unittest.TestCase):
                 "EDGE_HIDE_ENABLED"
             ]
         )
+        self.assertFalse(config_manager.validate_config({})["AUTO_START_ENABLED"])
+        self.assertTrue(
+            config_manager.validate_config({"AUTO_START_ENABLED": "true"})[
+                "AUTO_START_ENABLED"
+            ]
+        )
         self.assertTrue(
             config_manager.validate_config({})[
                 "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE"

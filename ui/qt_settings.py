@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import runtime as config_manager
+from core.autostart import AutostartError, set_autostart_enabled
 from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
@@ -288,6 +289,9 @@ class SettingsWindow(QDialog):
             "点击其它应用使面板失焦时收起面板并显示悬浮球"
         )
         runtime_form.addRow("面板自动收起", self.panel_auto_collapse_check)
+        self.autostart_check = QCheckBox(f"开机后自动运行 {APP_DISPLAY_NAME}")
+        self.autostart_check.setToolTip("使用当前 Windows 用户的启动项，无需管理员权限")
+        runtime_form.addRow("开机自启", self.autostart_check)
         data_dir_row = QWidget()
         data_dir_layout = QHBoxLayout(data_dir_row)
         data_dir_layout.setContentsMargins(0, 0, 0, 0)
@@ -822,6 +826,7 @@ class SettingsWindow(QDialog):
         self.panel_auto_collapse_check.setChecked(
             bool(values.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))
         )
+        self.autostart_check.setChecked(bool(values.get("AUTO_START_ENABLED", False)))
         self.deepseek_peak_pricing_enabled.setChecked(
             bool(values.get("DEEPSEEK_PEAK_PRICING_ENABLED", False))
         )
@@ -898,6 +903,7 @@ class SettingsWindow(QDialog):
             "UI_THEME": str(self.theme_combo.currentData() or "dark"),
             "EDGE_HIDE_ENABLED": self.edge_hide_check.isChecked(),
             "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": self.panel_auto_collapse_check.isChecked(),
+            "AUTO_START_ENABLED": self.autostart_check.isChecked(),
             "UPDATE_AUTO_CHECK_ENABLED": self.auto_check_updates.isChecked(),
             "UPDATE_CHANNEL": str(self.update_channel_combo.currentData() or "stable"),
             "DEEPSEEK_PEAK_PRICING_ENABLED": self.deepseek_peak_pricing_enabled.isChecked(),
@@ -987,9 +993,26 @@ class SettingsWindow(QDialog):
         except (OSError, ValueError) as exc:
             self._set_feedback(self.save_feedback, f"应用数据目录不可用：{exc}", "danger")
             return
+        previous_autostart = bool(config_manager.get("AUTO_START_ENABLED", False))
+        requested_autostart = bool(values.get("AUTO_START_ENABLED", False))
+        autostart_changed = previous_autostart != requested_autostart
+        if autostart_changed:
+            try:
+                set_autostart_enabled(requested_autostart)
+            except AutostartError as exc:
+                self._set_feedback(self.save_feedback, f"开机自启设置失败：{exc}", "danger")
+                return
         try:
             config_manager.save_config(values)
         except Exception as exc:
+            if autostart_changed:
+                try:
+                    # 配置未保存时恢复原启动行为，避免开关与持久化状态不一致。
+                    set_autostart_enabled(previous_autostart)
+                except AutostartError:
+                    config_manager.logger().warning(
+                        "Windows autostart state could not be rolled back"
+                    )
             self._set_feedback(self.save_feedback, f"保存失败，配置已回滚：{exc}", "danger")
             return
         scheduled_data_dir = (
