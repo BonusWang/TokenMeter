@@ -345,12 +345,23 @@ def load_widget_position() -> tuple[int, int] | None:
     return state_store.load_widget_position(WIDGET_STATE_PATH)
 
 
+def load_widget_size() -> int | None:
+    return state_store.load_widget_size(WIDGET_STATE_PATH)
+
+
 def save_widget_position(x: int, y: int) -> None:
     try:
         # 位置状态独立于用户配置，拖动时不会触发配置备份或凭据写入。
         state_store.save_widget_position(WIDGET_STATE_PATH, x, y)
     except OSError:
         logger().warning("Widget position could not be saved")
+
+
+def save_widget_size(size: int) -> None:
+    try:
+        state_store.save_widget_size(WIDGET_STATE_PATH, size)
+    except OSError:
+        logger().warning("Widget size could not be saved")
 
 
 def load_panel_layout_state() -> dict[str, Any]:

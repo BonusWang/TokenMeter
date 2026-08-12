@@ -26,10 +26,14 @@ class FloatingUsageBall(QWidget):
     pressed = Signal(QPoint)
     dragged = Signal(QPoint)
     released = Signal(QPoint)
+    resize_started = Signal(QPoint)
+    resize_dragged = Signal(QPoint)
+    resize_released = Signal(QPoint)
 
     def __init__(self, size: int = 88, parent: QWidget | None = None):
         super().__init__(parent)
         self.setFixedSize(size, size)
+        self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._today = "--"
         self._balance = "--"
@@ -46,6 +50,7 @@ class FloatingUsageBall(QWidget):
         self._peak_highlight = False
         self._hovered = False
         self._active = False
+        self._resizing = False
         theme_controller().changed.connect(self._on_theme_changed)
 
     def _on_theme_changed(self, _mode: str, _resolved: str) -> None:
@@ -145,11 +150,25 @@ class FloatingUsageBall(QWidget):
 
     def leaveEvent(self, event) -> None:
         self._hovered = False
+        if not self._resizing:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.update()
         super().leaveEvent(event)
 
+    def _resize_handle_rect(self) -> QRectF:
+        scale = min(self.width(), self.height()) / DESIGN_SIZE
+        # 点击区必须落在圆形窗口掩码内，否则 Windows 会把右下角事件裁掉。
+        return QRectF(78 * scale, 78 * scale, 24 * scale, 24 * scale)
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._resize_handle_rect().contains(event.position()):
+                self._resizing = True
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+                self.update()
+                self.resize_started.emit(event.globalPosition().toPoint())
+                event.accept()
+                return
             self._active = True
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.update()
@@ -157,17 +176,51 @@ class FloatingUsageBall(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:
+        if self._resizing and event.buttons() & Qt.MouseButton.LeftButton:
+            self.resize_dragged.emit(event.globalPosition().toPoint())
+            event.accept()
+            return
         if event.buttons() & Qt.MouseButton.LeftButton:
             self.dragged.emit(event.globalPosition().toPoint())
             event.accept()
+            return
+        cursor = (
+            Qt.CursorShape.SizeFDiagCursor
+            if self._resize_handle_rect().contains(event.position())
+            else Qt.CursorShape.OpenHandCursor
+        )
+        self.setCursor(cursor)
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._resizing:
+                self._resizing = False
+                self.setCursor(
+                    Qt.CursorShape.SizeFDiagCursor
+                    if self._resize_handle_rect().contains(event.position())
+                    else Qt.CursorShape.OpenHandCursor
+                )
+                self.update()
+                self.resize_released.emit(event.globalPosition().toPoint())
+                event.accept()
+                return
             self._active = False
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self.update()
             self.released.emit(event.globalPosition().toPoint())
             event.accept()
+
+    def _paint_resize_handle(self, painter: QPainter, theme) -> None:
+        if not self._hovered and not self._resizing:
+            return
+        color = QColor(theme.accent_hover)
+        color.setAlpha(245 if self._resizing else 210)
+        painter.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        # 三条斜线比实心角标更轻，不会遮挡缩小后的额度或余额文字。
+        painter.drawLine(QPointF(84, 98), QPointF(98, 84))
+        painter.drawLine(QPointF(89, 100), QPointF(100, 89))
+        painter.drawLine(QPointF(80, 94), QPointF(94, 80))
 
     @staticmethod
     def _wave_path(
@@ -331,44 +384,53 @@ class FloatingUsageBall(QWidget):
 
         if self._quota_mode:
             self._paint_quota(painter, theme, ball_radius)
-            painter.end()
-            return
+        else:
+            highlight = QLinearGradient(0, 8, 0, side * 0.55)
+            highlight_start = QColor(theme.accent)
+            highlight_start.setAlpha(42)
+            highlight_end = QColor(theme.accent)
+            highlight_end.setAlpha(0)
+            highlight.setColorAt(0.0, highlight_start)
+            highlight.setColorAt(1.0, highlight_end)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(highlight)
+            painter.drawEllipse(QRectF(16, 12, side - 32, side * 0.42))
 
-        highlight = QLinearGradient(0, 8, 0, side * 0.55)
-        highlight_start = QColor(theme.accent)
-        highlight_start.setAlpha(42)
-        highlight_end = QColor(theme.accent)
-        highlight_end.setAlpha(0)
-        highlight.setColorAt(0.0, highlight_start)
-        highlight.setColorAt(1.0, highlight_end)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(highlight)
-        painter.drawEllipse(QRectF(16, 12, side - 32, side * 0.42))
+            painter.setPen(QColor(theme.subtext))
+            painter.setFont(QFont("Microsoft YaHei UI", 9))
+            painter.drawText(
+                QRectF(10, 18, side - 20, 18),
+                Qt.AlignmentFlag.AlignCenter,
+                self._primary_label,
+            )
 
-        painter.setPen(QColor(theme.subtext))
-        painter.setFont(QFont("Microsoft YaHei UI", 9))
-        painter.drawText(
-            QRectF(10, 18, side - 20, 18),
-            Qt.AlignmentFlag.AlignCenter,
-            self._primary_label,
-        )
+            painter.setPen(QColor(theme.value))
+            value_size = 16 if len(self._today) <= 8 else 12
+            painter.setFont(QFont("Microsoft YaHei UI", value_size, QFont.Weight.Bold))
+            painter.drawText(
+                QRectF(8, 34, side - 16, 25),
+                Qt.AlignmentFlag.AlignCenter,
+                self._today,
+            )
 
-        painter.setPen(QColor(theme.value))
-        value_size = 16 if len(self._today) <= 8 else 12
-        painter.setFont(QFont("Microsoft YaHei UI", value_size, QFont.Weight.Bold))
-        painter.drawText(QRectF(8, 34, side - 16, 25), Qt.AlignmentFlag.AlignCenter, self._today)
-
-        painter.setPen(QPen(QColor(theme.border), 1))
-        painter.drawLine(QPointF(side * 0.25, 64), QPointF(side * 0.75, 64))
-        painter.setPen(QColor(theme.subtext))
-        painter.setFont(QFont("Microsoft YaHei UI", 8))
-        painter.drawText(
-            QRectF(10, 65, side - 20, 15),
-            Qt.AlignmentFlag.AlignCenter,
-            self._secondary_label,
-        )
-        painter.setPen(QColor(theme.accent_hover))
-        balance_size = 11 if len(self._balance) <= 8 else 9
-        painter.setFont(QFont("Microsoft YaHei UI", balance_size, QFont.Weight.DemiBold))
-        painter.drawText(QRectF(14, 80, side - 28, 19), Qt.AlignmentFlag.AlignCenter, self._balance)
+            painter.setPen(QPen(QColor(theme.border), 1))
+            painter.drawLine(QPointF(side * 0.25, 64), QPointF(side * 0.75, 64))
+            painter.setPen(QColor(theme.subtext))
+            painter.setFont(QFont("Microsoft YaHei UI", 8))
+            painter.drawText(
+                QRectF(10, 65, side - 20, 15),
+                Qt.AlignmentFlag.AlignCenter,
+                self._secondary_label,
+            )
+            painter.setPen(QColor(theme.accent_hover))
+            balance_size = 11 if len(self._balance) <= 8 else 9
+            painter.setFont(
+                QFont("Microsoft YaHei UI", balance_size, QFont.Weight.DemiBold)
+            )
+            painter.drawText(
+                QRectF(14, 80, side - 28, 19),
+                Qt.AlignmentFlag.AlignCenter,
+                self._balance,
+            )
+        self._paint_resize_handle(painter, theme)
         painter.end()

@@ -29,11 +29,20 @@ def load_widget_position(path: Path) -> tuple[int, int] | None:
         return None
 
 
+def load_widget_size(path: Path) -> int | None:
+    try:
+        return int(load_dict(path)["size"])
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
 def save_widget_position(path: Path, x: int, y: int) -> None:
-    path.write_text(
-        json.dumps({"x": int(x), "y": int(y)}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # 位置和用户缩放后的尺寸共用状态文件；拖动保存位置时不能覆盖尺寸。
+    merge_dict(path, {"x": int(x), "y": int(y)})
+
+
+def save_widget_size(path: Path, size: int) -> None:
+    merge_dict(path, {"size": int(size)})
 
 
 def merge_dict(path: Path, values: dict[str, Any]) -> None:
@@ -50,7 +59,9 @@ __all__ = [
     "clear",
     "load_dict",
     "load_widget_position",
+    "load_widget_size",
     "merge_dict",
     "save_widget_position",
+    "save_widget_size",
     "write_json",
 ]

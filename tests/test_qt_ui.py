@@ -10,7 +10,7 @@ os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 import pyqtgraph as pg
 import pytest
 from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QSize, QTime, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QEnterEvent, QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -1493,6 +1493,133 @@ def test_compact_ball_uses_smaller_size_and_keeps_free_drag_position():
         widget.hide()
 
 
+def test_ball_resize_handle_uses_separate_signals_from_move_and_click():
+    ball = FloatingUsageBall(88)
+    ball.show()
+    APP.processEvents()
+    pressed: list[QPoint] = []
+    dragged: list[QPoint] = []
+    released: list[QPoint] = []
+    resize_started: list[QPoint] = []
+    resize_dragged: list[QPoint] = []
+    resize_released: list[QPoint] = []
+    ball.pressed.connect(pressed.append)
+    ball.dragged.connect(dragged.append)
+    ball.released.connect(released.append)
+    ball.resize_started.connect(resize_started.append)
+    ball.resize_dragged.connect(resize_dragged.append)
+    ball.resize_released.connect(resize_released.append)
+
+    def resize_event(local: QPoint, global_point: QPoint, event_type: str) -> Mock:
+        event = Mock()
+        event.button.return_value = (
+            Qt.MouseButton.LeftButton
+            if event_type in {"press", "release"}
+            else Qt.MouseButton.NoButton
+        )
+        event.buttons.return_value = (
+            Qt.MouseButton.LeftButton
+            if event_type in {"press", "move"}
+            else Qt.MouseButton.NoButton
+        )
+        event.position.return_value = QPointF(local)
+        event.globalPosition.return_value = QPointF(global_point)
+        return event
+
+    handle = QPoint(68, 68)
+    origin = QPoint(600, 400)
+    ball.mousePressEvent(resize_event(handle, origin, "press"))
+    ball.mouseMoveEvent(resize_event(handle, origin + QPoint(20, 20), "move"))
+    ball.mouseReleaseEvent(
+        resize_event(handle, origin + QPoint(20, 20), "release")
+    )
+
+    assert resize_started == [origin]
+    assert resize_dragged == [origin + QPoint(20, 20)]
+    assert resize_released == [origin + QPoint(20, 20)]
+    assert pressed == []
+    assert dragged == []
+    assert released == []
+
+    center = ball.rect().center()
+    ball.mousePressEvent(resize_event(center, origin, "press"))
+    ball.mouseMoveEvent(resize_event(center, origin + QPoint(12, 0), "move"))
+    ball.mouseReleaseEvent(
+        resize_event(center, origin + QPoint(12, 0), "release")
+    )
+    assert pressed == [origin]
+    assert dragged == [origin + QPoint(12, 0)]
+    assert released == [origin + QPoint(12, 0)]
+    ball.close()
+
+
+def test_ball_resize_handle_is_only_painted_while_hovered():
+    ball = FloatingUsageBall(88)
+    ball.show()
+    APP.processEvents()
+    ball.leaveEvent(QEvent(QEvent.Type.Leave))
+    APP.processEvents()
+    handle_pixel = QPoint(58, 69)
+    hidden_color = ball.grab().toImage().pixelColor(handle_pixel)
+
+    center = QPointF(ball.rect().center())
+    ball.enterEvent(QEnterEvent(center, center, center))
+    APP.processEvents()
+    hovered_color = ball.grab().toImage().pixelColor(handle_pixel)
+
+    ball.leaveEvent(QEvent(QEvent.Type.Leave))
+    APP.processEvents()
+    restored_color = ball.grab().toImage().pixelColor(handle_pixel)
+
+    assert hovered_color != hidden_color
+    assert restored_color == hidden_color
+    ball.close()
+
+
+def test_ball_resize_clamps_size_and_window_to_work_area():
+    with (
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch("ui.qt_widget.config_manager.load_widget_size", return_value=None),
+    ):
+        widget = FloatingWidget()
+    work = WorkArea(0, 0, 300, 220)
+    widget.move(204, 124)
+
+    with (
+        patch.object(widget, "_work_area", return_value=work),
+        patch("ui.qt_widget.config_manager.save_widget_position"),
+        patch("ui.qt_widget.config_manager.save_widget_size") as save_size,
+    ):
+        widget._start_resize(QPoint(292, 212))
+        widget._resize_ball(QPoint(392, 312))
+        assert (widget.width(), widget.height()) == (124, 124)
+        assert (widget.ball.width(), widget.ball.height()) == (124, 124)
+        assert (widget.x(), widget.y()) == (168, 88)
+
+        widget._resize_ball(QPoint(92, 12))
+        assert (widget.width(), widget.height()) == (72, 72)
+        assert (widget.ball.width(), widget.ball.height()) == (72, 72)
+
+        widget._end_resize(QPoint(92, 12))
+        save_size.assert_called_once_with(72)
+
+    widget._closed = True
+    widget.hide()
+
+
+def test_compact_ball_restores_saved_resize_state():
+    with (
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch("ui.qt_widget.config_manager.load_widget_size", return_value=104),
+    ):
+        widget = FloatingWidget()
+
+    assert (widget.width(), widget.height()) == (104, 104)
+    assert (widget.ball.width(), widget.ball.height()) == (104, 104)
+    widget._closed = True
+    widget.hide()
+
+
 def test_deactivation_collapses_panel_but_ignores_visible_settings():
     with patch("ui.qt_widget.TokenData.fetch", return_value=sample_data()):
         widget = FloatingWidget()
@@ -1614,6 +1741,46 @@ def test_edge_snap_uses_one_eased_animation_and_delayed_hide():
         widget.hide()
 
 
+@pytest.mark.parametrize(
+    ("direction", "start_x", "hidden_x"),
+    (("left", 0, -64), ("right", 1832, 1896)),
+)
+def test_edge_hide_keeps_part_of_ball_visible_and_reduces_opacity(
+    direction: str, start_x: int, hidden_x: int
+):
+    with (
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch("ui.qt_widget.config_manager.load_widget_size", return_value=88),
+    ):
+        widget = FloatingWidget()
+    work = WorkArea(0, 0, 1920, 1080)
+    widget.move(start_x, 200)
+    widget._edge_snapped = True
+    widget._edge_direction = direction
+
+    with patch.object(widget, "_work_area", return_value=work):
+        widget._do_edge_hide()
+
+        assert widget._edge_hidden is True
+        assert widget._edge_visible_extent() == 24
+        assert widget._edge_animation.endValue() == QPoint(hidden_x, 200)
+        assert widget.windowOpacity() == pytest.approx(1.0)
+        assert widget._edge_opacity_timer.interval() == 3_000
+        assert widget._edge_opacity_timer.isActive()
+
+        widget._apply_edge_hidden_opacity()
+        # Qt/Windows 将窗口透明度量化为 8 位值，允许一个透明度级差。
+        assert widget.windowOpacity() == pytest.approx(0.72, abs=1 / 255)
+
+        widget._edge_restore()
+        assert widget._edge_hidden is False
+        assert not widget._edge_opacity_timer.isActive()
+        assert widget.windowOpacity() == pytest.approx(1.0)
+
+    widget._closed = True
+    widget.hide()
+
+
 def test_edge_snap_accepts_ball_that_already_overlaps_screen_edge():
     with patch("ui.qt_widget.TokenData.fetch", return_value=sample_data()):
         widget = FloatingWidget()
@@ -1642,6 +1809,7 @@ def test_edge_unsnap_clears_hover_state_before_next_snap():
 
             widget._edge_unsnap()
             assert widget._edge_hovering is False
+            assert widget.windowOpacity() == pytest.approx(1.0)
 
             widget.move(12, 200)
             assert widget._try_edge_snap()

@@ -432,6 +432,18 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(custom_values["WIDGET_COMPACT_SIZE"], 112)
 
+    def test_widget_position_and_size_share_state_without_overwriting(self):
+        temp_root = Path.cwd() / ".test-appdata" / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            state_path = Path(directory) / "widget-state.json"
+            with patch.object(config_manager, "WIDGET_STATE_PATH", state_path):
+                config_manager.save_widget_size(104)
+                config_manager.save_widget_position(320, 180)
+
+                self.assertEqual(config_manager.load_widget_size(), 104)
+                self.assertEqual(config_manager.load_widget_position(), (320, 180))
+
     def test_panel_auto_collapse_setting_round_trips(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"
         temp_root.mkdir(parents=True, exist_ok=True)
