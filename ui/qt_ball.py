@@ -48,6 +48,9 @@ IDLE_IMPULSE_MIN_INTERVAL = 2.0
 IDLE_IMPULSE_MAX_INTERVAL = 5.0
 IDLE_IMPULSE_MIN_AMPLITUDE = 0.15
 IDLE_IMPULSE_MAX_AMPLITUDE = 0.35
+HIGH_LEVEL_FLOW_START = 0.80
+INTERNAL_FLOW_DECAY = 1.8
+INTERNAL_FLOW_VELOCITY_DECAY = 3.2
 
 
 class LiquidSurfaceState:
@@ -263,15 +266,20 @@ class FloatingUsageBall(QWidget):
         self._water_shine_gradient = QLinearGradient(-36, 0, 36, 0)
         self._water_shine_gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
         self._water_shine_gradient.setColorAt(0.38, QColor(255, 255, 255, 4))
-        self._water_shine_gradient.setColorAt(0.5, QColor(225, 247, 255, 18))
+        self._water_shine_gradient.setColorAt(0.5, QColor(225, 247, 255, 26))
         self._water_shine_gradient.setColorAt(0.62, QColor(255, 255, 255, 4))
         self._water_shine_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
         self._deep_flow_gradient = QLinearGradient(-44, 0, 44, 0)
         self._deep_flow_gradient.setColorAt(0.0, QColor(8, 35, 98, 0))
         self._deep_flow_gradient.setColorAt(0.38, QColor(8, 35, 98, 3))
-        self._deep_flow_gradient.setColorAt(0.5, QColor(8, 35, 98, 16))
+        self._deep_flow_gradient.setColorAt(0.5, QColor(8, 35, 98, 24))
         self._deep_flow_gradient.setColorAt(0.62, QColor(8, 35, 98, 3))
         self._deep_flow_gradient.setColorAt(1.0, QColor(8, 35, 98, 0))
+        self._internal_flow_center = QPointF(DESIGN_SIZE / 2, DESIGN_SIZE / 2)
+        self._internal_flow_direction = QPointF(1, 0)
+        self._internal_flow_velocity = QPointF()
+        self._internal_flow_strength = 0.0
+        self._internal_flow_age = 0.0
         self._glass_highlight_path = QPainterPath(QPointF(23, 47))
         self._glass_highlight_path.cubicTo(
             QPointF(27, 29),
@@ -348,6 +356,7 @@ class FloatingUsageBall(QWidget):
         if remaining is None or remaining <= 0:
             # 空额度停止动画并清掉动量，避免下次恢复额度时复活旧余波。
             self._liquid_surface.reset()
+            self._reset_internal_flow()
         remaining_text = "未知" if remaining is None else f"{remaining:.0f}%"
         self.setAccessibleName("Codex 剩余额度")
         self.setAccessibleDescription(remaining_text)
@@ -371,6 +380,7 @@ class FloatingUsageBall(QWidget):
         self._pointer_smoothed_velocity = QPointF()
         self._drag_last_global = None
         self._drag_last_velocity = QPointF()
+        self._reset_internal_flow()
         self.setAccessibleName("")
         self.setAccessibleDescription("")
         self.setToolTip("")
@@ -379,7 +389,7 @@ class FloatingUsageBall(QWidget):
     def _ensure_animation(self) -> None:
         if self._quota_remaining is None or self._quota_remaining <= 0:
             return
-        if self._active or not self._liquid_surface.settled:
+        if self._active or not self._liquid_surface.settled or self._internal_flow_strength > 0.01:
             self._wave_timer.setInterval(ACTIVE_FRAME_INTERVAL_MS)
         if not self._wave_timer.isActive():
             self._wave_clock.restart()
@@ -392,9 +402,14 @@ class FloatingUsageBall(QWidget):
         elapsed_ms = self._wave_clock.restart()
         elapsed_seconds = 0.016 if elapsed_ms <= 0 else min(elapsed_ms, 50) / 1000
         self._liquid_surface.step(elapsed_seconds)
+        self._advance_internal_flow(elapsed_seconds)
         self._wave_phase = (self._liquid_surface.idle_phase * 0.4) % math.tau
         self.update()
-        active_motion = self._active or not self._liquid_surface.settled
+        active_motion = (
+            self._active
+            or not self._liquid_surface.settled
+            or self._internal_flow_strength > 0.01
+        )
         interval = ACTIVE_FRAME_INTERVAL_MS if active_motion else IDLE_FRAME_INTERVAL_MS
         if self._wave_timer.interval() != interval:
             self._wave_timer.setInterval(interval)
@@ -402,6 +417,64 @@ class FloatingUsageBall(QWidget):
             self._liquid_surface.clear_motion()
         if profile_timer.isValid():
             self._record_debug_profile("physics_update", profile_timer.nsecsElapsed())
+
+    def _reset_internal_flow(self) -> None:
+        self._internal_flow_center = QPointF(DESIGN_SIZE / 2, DESIGN_SIZE / 2)
+        self._internal_flow_direction = QPointF(1, 0)
+        self._internal_flow_velocity = QPointF()
+        self._internal_flow_strength = 0.0
+        self._internal_flow_age = 0.0
+
+    def _advance_internal_flow(self, elapsed_seconds: float) -> None:
+        dt = max(0.001, min(0.05, elapsed_seconds))
+        if self._internal_flow_strength <= 0.001:
+            self._internal_flow_strength = 0.0
+            self._internal_flow_velocity = QPointF()
+            return
+        self._internal_flow_age += dt
+        self._internal_flow_center += self._internal_flow_velocity * (dt * 0.28)
+        velocity_decay = math.exp(-INTERNAL_FLOW_VELOCITY_DECAY * dt)
+        self._internal_flow_velocity *= velocity_decay
+        self._internal_flow_strength *= math.exp(-INTERNAL_FLOW_DECAY * dt)
+
+    @staticmethod
+    def _smoothstep(start: float, end: float, value: float) -> float:
+        progress = max(0.0, min(1.0, (value - start) / (end - start)))
+        return progress * progress * (3 - 2 * progress)
+
+    @classmethod
+    def _high_level_factor(cls, ratio: float) -> float:
+        return cls._smoothstep(HIGH_LEVEL_FLOW_START, 1.0, ratio)
+
+    def _disturb_internal_flow(
+        self,
+        position: QPointF,
+        velocity: QPointF,
+        normalized_speed: float,
+        ratio: float,
+    ) -> None:
+        magnitude = math.hypot(velocity.x(), velocity.y())
+        if magnitude <= 0:
+            return
+        direction = QPointF(velocity.x() / magnitude, velocity.y() / magnitude)
+        high_level = self._high_level_factor(ratio)
+        momentum = min(34.0, 7.0 + normalized_speed * 5.2) * (0.82 + high_level * 0.18)
+        # 保留部分旧动量，让突然反向时旧尾流与新流向短暂干涉，而不是瞬间翻转贴着鼠标走。
+        carried_velocity = self._internal_flow_velocity * 0.42
+        injected_velocity = direction * momentum
+        combined_velocity = carried_velocity + injected_velocity
+        combined_magnitude = math.hypot(combined_velocity.x(), combined_velocity.y())
+        if combined_magnitude > 0.01:
+            self._internal_flow_direction = combined_velocity / combined_magnitude
+        self._internal_flow_velocity = combined_velocity
+        self._internal_flow_center = QPointF(position)
+        pointer_strength = min(1.0, 0.18 + normalized_speed * 0.14)
+        self._internal_flow_strength = min(
+            1.0,
+            max(self._internal_flow_strength * 0.62, pointer_strength)
+            * (0.86 + high_level * 0.14),
+        )
+        self._internal_flow_age = 0.0
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -505,6 +578,12 @@ class FloatingUsageBall(QWidget):
             node_position,
             normalized_speed,
             self._pointer_smoothed_velocity.x(),
+        )
+        self._disturb_internal_flow(
+            design_position,
+            self._pointer_smoothed_velocity,
+            normalized_speed,
+            ratio,
         )
         self._ensure_animation()
         return True
@@ -718,32 +797,64 @@ class FloatingUsageBall(QWidget):
         ]
         return self._smooth_surface_path(rect, surface_y + 3.2, offsets)
 
-    def _paint_full_quota_flow(
+    def _internal_split_paths(self, inner: QRectF) -> tuple[QPainterPath, QPainterPath]:
+        direction = self._internal_flow_direction
+        normal = QPointF(-direction.y(), direction.x())
+        center = self._internal_flow_center
+        strength = self._internal_flow_strength
+        length = inner.width() * (0.13 + strength * 0.12)
+        # 两股流先分开、随后带阻尼地交叉回拢；负值阶段形成一次克制的二次碰撞。
+        separation = (
+            inner.width()
+            * (0.025 + strength * 0.055)
+            * math.cos(self._internal_flow_age * 7.2)
+            * math.exp(-self._internal_flow_age * 0.48)
+        )
+        tail = center - direction * length
+        head = center + direction * (length * 0.78)
+        paths: list[QPainterPath] = []
+        for side in (-1.0, 1.0):
+            path = QPainterPath(tail)
+            path.cubicTo(
+                center - direction * (length * 0.28) + normal * (separation * side),
+                center + direction * (length * 0.28) + normal * (separation * side),
+                head,
+            )
+            paths.append(path)
+        return paths[0], paths[1]
+
+    def _paint_internal_flow(
         self,
         painter: QPainter,
         theme,
         inner: QRectF,
         clip: QPainterPath,
+        ratio: float,
     ) -> None:
         center = inner.center()
         phase_angle = math.degrees(self._wave_phase)
         activity = min(1.0, self._liquid_surface.activity / MAX_WAVE_HEIGHT)
+        high_level = self._high_level_factor(ratio)
+        pointer_strength = self._internal_flow_strength
         edge_delta = self._liquid_surface.heights[-1] - self._liquid_surface.heights[0]
         painter.save()
         painter.setClipPath(clip)
         painter.translate(center)
-        painter.translate(-edge_delta * inner.width() * 0.16, 0)
-        painter.rotate(phase_angle + edge_delta * 46)
+        painter.translate(
+            -edge_delta * inner.width() * 0.16 + self._internal_flow_velocity.x() * 0.035,
+            self._internal_flow_velocity.y() * 0.025,
+        )
+        painter.rotate(phase_angle + edge_delta * 46 + pointer_strength * 5)
         painter.translate(-center)
 
-        # 满液位没有可见液面；用同一永久 idle 相位缓慢移动内部弧光。
+        # 高水位时自由液面逐渐不可见，因此用多速率弧光把动态权重平滑转移到水体内部。
         flow_color = QColor("#FFFFFF")
-        flow_color.setAlpha(round(24 + activity * 58))
+        flow_color.setAlpha(round(10 + high_level * 25 + activity * 20 + pointer_strength * 24))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(
             QPen(
                 flow_color,
-                4.5,
+                3.2 + high_level * 2.0,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
             )
@@ -751,11 +862,11 @@ class FloatingUsageBall(QWidget):
         painter.drawArc(inner.adjusted(11, 16, -11, -16), 18 * 16, 142 * 16)
 
         inner_flow = QColor(theme.accent_hover)
-        inner_flow.setAlpha(round(50 + activity * 62))
+        inner_flow.setAlpha(round(16 + high_level * 38 + activity * 18 + pointer_strength * 20))
         painter.setPen(
             QPen(
                 inner_flow,
-                3.0,
+                2.4 + high_level * 1.8,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
             )
@@ -763,40 +874,58 @@ class FloatingUsageBall(QWidget):
         painter.drawArc(inner.adjusted(21, 25, -21, -25), 198 * 16, 154 * 16)
         painter.restore()
 
-        if activity > 0.03:
-            # 满水时只在受力阶段投影一条柔和流带，避免常驻锐利横线被误读为 50% 液面。
-            flow_offsets = [
-                height * inner.height() * 0.55 for height in self._liquid_surface.heights
-            ]
-            flow_band = self._smooth_surface_path(inner, center.y(), flow_offsets)
-            band_color = QColor(theme.accent_hover)
-            band_color.setAlpha(round(18 + activity * 62))
+        if pointer_strength > 0.01:
+            split_paths = self._internal_split_paths(inner)
             painter.save()
             painter.setClipPath(clip)
             painter.setBrush(Qt.BrushStyle.NoBrush)
+            for index, split_path in enumerate(split_paths):
+                split_color = QColor("#FFFFFF" if index == 0 else theme.accent_hover)
+                split_color.setAlpha(
+                    round((18 + high_level * 54) * pointer_strength)
+                )
+                painter.setPen(
+                    QPen(
+                        split_color,
+                        2.6 + high_level * 2.0 + pointer_strength * 1.4,
+                        Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap,
+                    )
+                )
+                painter.drawPath(split_path)
+
+            wake_color = QColor(theme.accent)
+            wake_color.setAlpha(round((12 + high_level * 30) * pointer_strength))
+            direction = self._internal_flow_direction
+            wake_start = self._internal_flow_center - direction * (
+                inner.width() * (0.17 + pointer_strength * 0.12)
+            )
+            wake_end = self._internal_flow_center - direction * (inner.width() * 0.035)
             painter.setPen(
                 QPen(
-                    band_color,
-                    4.5 + activity * 3.5,
+                    wake_color,
+                    4.5 + high_level * 2.5,
                     Qt.PenStyle.SolidLine,
                     Qt.PenCapStyle.RoundCap,
                 )
             )
-            painter.drawPath(flow_band)
+            painter.drawLine(wake_start, wake_end)
             painter.restore()
 
-        rim_light = QColor("#FFFFFF")
-        rim_light.setAlpha(round(45 + activity * 82))
-        painter.setPen(
-            QPen(
-                rim_light,
-                1.5,
-                Qt.PenStyle.SolidLine,
-                Qt.PenCapStyle.RoundCap,
+        full_factor = self._smoothstep(0.95, 1.0, ratio)
+        if full_factor > 0:
+            rim_light = QColor("#FFFFFF")
+            rim_light.setAlpha(round((30 + activity * 48 + pointer_strength * 38) * full_factor))
+            painter.setPen(
+                QPen(
+                    rim_light,
+                    1.1 + full_factor * 0.5,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                )
             )
-        )
-        start = round((28 - phase_angle - edge_delta * 80) * 16)
-        painter.drawArc(inner.adjusted(2, 2, -2, -2), start, 78 * 16)
+            start = round((28 - phase_angle - edge_delta * 80) * 16)
+            painter.drawArc(inner.adjusted(2, 2, -2, -2), start, 78 * 16)
 
     @staticmethod
     def _paint_centered_text(
@@ -858,14 +987,19 @@ class FloatingUsageBall(QWidget):
         painter: QPainter,
         inner: QRectF,
         water_path: QPainterPath,
+        high_level: float,
     ) -> None:
         shine_progress = (self._liquid_surface.idle_phase % 12.0) / 12.0
         shine_margin = inner.width() * 0.45
         shine_x = inner.left() - shine_margin + shine_progress * (inner.width() + shine_margin * 2)
         painter.save()
         painter.setClipPath(water_path)
-        painter.translate(shine_x, inner.center().y())
-        painter.rotate(-10)
+        painter.setOpacity(0.62 + high_level * 0.38)
+        painter.translate(
+            shine_x + self._internal_flow_velocity.x() * 0.045,
+            inner.center().y() + self._internal_flow_velocity.y() * 0.025,
+        )
+        painter.rotate(-10 + self._internal_flow_direction.y() * self._internal_flow_strength * 5)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._water_shine_gradient)
         painter.drawRect(QRectF(-36, -inner.height(), 72, inner.height() * 2))
@@ -876,6 +1010,7 @@ class FloatingUsageBall(QWidget):
         painter: QPainter,
         inner: QRectF,
         water_path: QPainterPath,
+        high_level: float,
     ) -> None:
         deep_progress = (self._liquid_surface.idle_phase % 16.0) / 16.0
         deep_margin = inner.width() * 0.5
@@ -884,8 +1019,12 @@ class FloatingUsageBall(QWidget):
         )
         painter.save()
         painter.setClipPath(water_path)
-        painter.translate(deep_x, inner.center().y())
-        painter.rotate(7)
+        painter.setOpacity(0.58 + high_level * 0.42)
+        painter.translate(
+            deep_x - self._internal_flow_velocity.x() * 0.035,
+            inner.center().y() - self._internal_flow_velocity.y() * 0.02,
+        )
+        painter.rotate(7 - self._internal_flow_direction.y() * self._internal_flow_strength * 4)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._deep_flow_gradient)
         painter.drawRect(QRectF(-44, 0, 88, inner.height()))
@@ -912,6 +1051,7 @@ class FloatingUsageBall(QWidget):
         if self._quota_remaining is not None and self._quota_remaining > 0:
             ratio = self._quota_remaining / 100
             surface_y = inner.bottom() - inner.height() * ratio
+            high_level = self._high_level_factor(ratio)
 
             painter.save()
             painter.setClipPath(clip)
@@ -923,9 +1063,9 @@ class FloatingUsageBall(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(water)
                 painter.drawPath(water_path)
-                self._paint_deep_flow(painter, inner, water_path)
-                self._paint_water_shine(painter, inner, water_path)
-                self._paint_full_quota_flow(painter, theme, inner, water_path)
+                self._paint_deep_flow(painter, inner, water_path, high_level)
+                self._paint_water_shine(painter, inner, water_path, high_level)
+                self._paint_internal_flow(painter, theme, inner, water_path, ratio)
             else:
                 back_path, _back_surface = self._surface_paths(
                     inner, surface_y, ratio, back_layer=True
@@ -939,8 +1079,9 @@ class FloatingUsageBall(QWidget):
                 painter.drawPath(back_path)
                 painter.setBrush(water)
                 painter.drawPath(water_path)
-                self._paint_deep_flow(painter, inner, water_path)
-                self._paint_water_shine(painter, inner, water_path)
+                self._paint_deep_flow(painter, inner, water_path, high_level)
+                self._paint_water_shine(painter, inner, water_path, high_level)
+                self._paint_internal_flow(painter, theme, inner, water_path, ratio)
 
                 subsurface = self._subsurface_highlight_path(inner, surface_y, ratio)
                 subsurface_color = QColor(220, 245, 255, 34)

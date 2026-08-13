@@ -2352,6 +2352,62 @@ def test_codex_full_quota_surface_reacts_and_uses_white_text_in_light_theme():
         ball.close()
 
 
+def test_codex_water_ball_high_level_flow_weight_transitions_continuously():
+    assert FloatingUsageBall._high_level_factor(0.80) == 0
+    assert FloatingUsageBall._high_level_factor(0.90) == pytest.approx(0.5)
+    assert 0.5 < FloatingUsageBall._high_level_factor(0.98) < 1
+    assert FloatingUsageBall._high_level_factor(1.0) == 1
+
+
+def test_codex_high_water_pointer_injects_internal_tail_flow_from_any_water_depth():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(98, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+
+    start = QPointF(18, 48)
+    ball.enterEvent(QEnterEvent(start, start, start))
+    QTest.qWait(10)
+    disturbed = ball._disturb_surface_from_pointer(QPointF(70, 48))
+    initial_center = QPointF(ball._internal_flow_center)
+    initial_strength = ball._internal_flow_strength
+
+    assert disturbed
+    assert initial_strength > 0.2
+    assert ball._internal_flow_velocity.x() > 0
+    for _ in range(30):
+        ball._advance_internal_flow(0.016)
+    assert ball._internal_flow_center.x() > initial_center.x()
+    assert 0 < ball._internal_flow_strength < initial_strength
+
+    ball.close()
+
+
+@pytest.mark.parametrize("remaining", [98, 100])
+def test_codex_high_water_keeps_visible_internal_idle_motion(remaining):
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(remaining, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+    first_frame = ball.grab().toImage()
+
+    for _ in range(40):
+        ball._advance_wave()
+    APP.processEvents()
+    next_frame = ball.grab().toImage()
+    changed_internal_pixels = sum(
+        1
+        for y in range(22, 76)
+        for x in range(12, 76)
+        if first_frame.pixelColor(x, y) != next_frame.pixelColor(x, y)
+    )
+
+    assert changed_internal_pixels > 40
+    ball.close()
+
+
 def test_settings_exposes_panel_auto_collapse_toggle():
     values = {
         **config_manager.all_config(),
