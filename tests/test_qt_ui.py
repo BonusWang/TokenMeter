@@ -1,3 +1,4 @@
+import math
 import os
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -9,8 +10,8 @@ os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 
 import pyqtgraph as pg
 import pytest
-from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QSize, QTime, Qt
-from PySide6.QtGui import QEnterEvent, QKeyEvent
+from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QRectF, QSize, QTime, Qt
+from PySide6.QtGui import QEnterEvent, QKeyEvent, QPainterPath
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,7 +32,7 @@ from api.providers.base import QuotaMetric, QuotaWindow
 import config_manager
 from data.store import PerProviderData, TokenData
 from ui.geometry import WorkArea
-from ui.qt_ball import FloatingUsageBall
+from ui.qt_ball import FloatingUsageBall, LiquidSurfaceState
 from ui.qt_panel import (
     ANNUAL_ACTIVITY_SECTION_HEIGHT,
     ANNUAL_PANEL_HEIGHT,
@@ -2024,8 +2025,10 @@ def test_codex_water_ball_renders_quota_level_in_dark_and_light_themes():
 
     try:
         initial_phase = ball._wave_phase
-        QTest.qWait(ball._wave_timer.interval() * 2 + 10)
+        QTest.qWait(ball._wave_timer.interval() + 10)
         assert ball._wave_timer.isActive()
+        assert ball._wave_timer.interval() == 40
+        assert ball._wave_timer.timerType() == Qt.TimerType.PreciseTimer
         assert ball._wave_phase != initial_phase
         assert dark_water.blue() > dark_water.red()
         assert dark_water != dark_empty
@@ -2047,6 +2050,303 @@ def test_codex_water_ball_renders_quota_level_in_dark_and_light_themes():
         APP.processEvents()
         empty_bottom = ball.grab().toImage().pixelColor(44, 68)
         assert empty_bottom != light_water
+        assert not ball._wave_timer.isActive()
+    finally:
+        controller.set_mode("dark")
+        ball.close()
+
+
+def test_codex_water_ball_pointer_impulse_propagates_and_settles():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(50, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+
+    pointer = QPointF(18, 70)
+    ball.enterEvent(QEnterEvent(pointer, pointer, pointer))
+    QTest.qWait(10)
+    disturbed = ball._disturb_surface_from_pointer(QPointF(70, 70))
+    initial_activity = ball._liquid_surface.activity
+    peak_height = 0.0
+    peak_trough = 0.0
+    for _ in range(60):
+        ball._liquid_surface.step(0.016)
+        peak_height = max(peak_height, max(ball._liquid_surface.heights))
+        peak_trough = min(peak_trough, min(ball._liquid_surface.heights))
+
+    assert disturbed
+    assert initial_activity > 0.02
+    assert peak_height > 0.005
+    assert peak_trough < -0.005
+
+    ball.leaveEvent(QEvent(QEvent.Type.Leave))
+    for _ in range(420):
+        ball._liquid_surface.step(0.016)
+
+    assert ball._liquid_surface.settled
+    ball.close()
+
+
+def test_codex_water_ball_pointer_speed_scales_the_surface_impulse():
+    surface = LiquidSurfaceState()
+    surface.disturb(6.5, 0.4, 1)
+    slow_impulse = surface.activity
+    surface.reset()
+    surface.disturb(6.5, 5.0, 1)
+    fast_impulse = surface.activity
+
+    assert fast_impulse > slow_impulse * 8
+
+
+def test_codex_water_ball_visual_split_has_trough_shoulders_and_rebound():
+    surface = LiquidSurfaceState()
+    surface.disturb(6.5, 5.0, 1)
+
+    assert surface.node_count == 14
+    assert surface.velocities[6] > 0
+    assert surface.velocities[7] > 0
+    assert surface.velocities[4] < 0
+    assert surface.velocities[9] < surface.velocities[4]
+
+    center_history = []
+    for _ in range(90):
+        surface.step(0.016)
+        center_history.append((surface.heights[6] + surface.heights[7]) / 2)
+    assert max(center_history) > 0.02
+    assert min(center_history) < 0
+
+
+def test_codex_water_ball_animation_timer_drops_to_idle_cadence_after_settling():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(83, "2 小时后重置")
+    ball._liquid_surface.disturb(6.5, 2.5, 1)
+    ball._ensure_animation()
+
+    for _ in range(600):
+        ball._advance_wave()
+        if ball._wave_timer.interval() == 40:
+            break
+
+    assert ball._liquid_surface.settled
+    assert ball._wave_timer.isActive()
+    assert ball._wave_timer.interval() == 40
+    ball.close()
+
+
+def test_codex_water_ball_idle_wave_is_subpixel_and_blends_back_after_interaction():
+    ball = FloatingUsageBall(124)
+    rect = QRectF(8, 8, 104, 104)
+    initial_offsets = ball._idle_surface_offsets(rect)
+
+    assert max(initial_offsets) - min(initial_offsets) < 2.4
+    assert max(initial_offsets) != min(initial_offsets)
+    assert sum(initial_offsets) == pytest.approx(0)
+    for _ in range(200):
+        ball._liquid_surface.step(0.05)
+    offsets_after_ten_seconds = ball._idle_surface_offsets(rect)
+    assert offsets_after_ten_seconds != initial_offsets
+    assert max(offsets_after_ten_seconds) != min(offsets_after_ten_seconds)
+
+    ball._liquid_surface.disturb(6.5, 5.0, 1)
+    active_weight = ball._liquid_surface.idle_weight
+    for _ in range(240):
+        ball._liquid_surface.step(0.016)
+
+    assert active_weight <= 0.28
+    assert ball._liquid_surface.idle_weight > 0.9
+    ball.close()
+
+
+def test_codex_water_ball_idle_source_adds_bounded_local_motion_at_random_intervals():
+    surface = LiquidSurfaceState()
+    surface.idle_impulse_remaining = 0
+    surface.step(0.04)
+
+    assert max(abs(value) for value in surface.velocities) < 0.03
+    assert max(abs(value) for value in surface.velocities) > 0.001
+    assert 2.0 <= surface.idle_impulse_remaining <= 5.0
+
+
+def test_codex_water_ball_material_gets_darker_toward_the_bottom():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(83, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+    image = ball.grab().toImage()
+
+    top_water = image.pixelColor(22, 21)
+    middle_water = image.pixelColor(22, 55)
+    bottom_water = image.pixelColor(44, 78)
+
+    assert top_water.blue() > top_water.red()
+    assert top_water.lightness() > middle_water.lightness() > bottom_water.lightness()
+    ball.close()
+
+
+def test_codex_water_ball_vertical_drag_acceleration_compresses_and_rebounds():
+    ball = FloatingUsageBall(88)
+    ball._liquid_surface.add_drag_acceleration(0, 60)
+
+    assert ball._liquid_surface.vertical_compression > 0
+    center_velocity = ball._liquid_surface.velocities[ball._liquid_surface.node_count // 2]
+    edge_velocity = ball._liquid_surface.velocities[0]
+    assert center_velocity * edge_velocity < 0
+    ball.close()
+
+
+def test_codex_water_ball_drag_impulse_sloshes_water_and_then_settles():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(50, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+
+    def drag_event(global_x: int, event_type: str) -> Mock:
+        event = Mock()
+        event.button.return_value = (
+            Qt.MouseButton.LeftButton
+            if event_type in {"press", "release"}
+            else Qt.MouseButton.NoButton
+        )
+        event.buttons.return_value = (
+            Qt.MouseButton.LeftButton
+            if event_type in {"press", "move"}
+            else Qt.MouseButton.NoButton
+        )
+        event.position.return_value = QPointF(44, 44)
+        event.globalPosition.return_value = QPointF(global_x, 400)
+        return event
+
+    ball.mousePressEvent(drag_event(600, "press"))
+    ball.mouseMoveEvent(drag_event(648, "move"))
+    assert ball._liquid_surface.drag_tilt > 0.1
+    for _ in range(8):
+        ball._liquid_surface.step(0.016)
+    assert ball._liquid_surface.heights[0] < ball._liquid_surface.heights[-1]
+    rightward_edge_delta = (
+        ball._liquid_surface.heights[-1] - ball._liquid_surface.heights[0]
+    )
+
+    ball.mouseMoveEvent(drag_event(560, "move"))
+    assert ball._liquid_surface.drag_tilt < 0
+    for _ in range(8):
+        ball._liquid_surface.step(0.016)
+    reversed_edge_delta = (
+        ball._liquid_surface.heights[-1] - ball._liquid_surface.heights[0]
+    )
+    assert reversed_edge_delta < rightward_edge_delta
+
+    ball.mouseReleaseEvent(drag_event(560, "release"))
+    first_edge_delta = (
+        ball._liquid_surface.heights[-1] - ball._liquid_surface.heights[0]
+    )
+    edge_deltas = []
+    for _ in range(80):
+        ball._liquid_surface.step(0.016)
+        edge_deltas.append(
+            ball._liquid_surface.heights[-1] - ball._liquid_surface.heights[0]
+        )
+    assert any(delta * first_edge_delta < 0 for delta in edge_deltas)
+
+    for _ in range(220):
+        ball._liquid_surface.step(0.016)
+    assert ball._liquid_surface.activity < 0.025
+    ball.close()
+
+
+def test_codex_water_ball_surface_uses_smooth_cubic_curve():
+    rect = QRectF(8, 8, 104, 104)
+    offsets = [
+        math.sin(index / 13 * math.tau) * 8
+        for index in range(14)
+    ]
+    surface = FloatingUsageBall._smooth_surface_path(
+        rect,
+        60,
+        offsets,
+    )
+
+    assert surface.elementCount() == 1 + (len(offsets) - 1) * 3
+    assert any(
+        surface.elementAt(index).type == QPainterPath.ElementType.CurveToElement
+        for index in range(surface.elementCount())
+    )
+
+
+def test_codex_water_ball_pointer_only_disturbs_actual_water_region():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(10, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+
+    air_start = QPointF(24, 30)
+    ball.enterEvent(QEnterEvent(air_start, air_start, air_start))
+    QTest.qWait(10)
+    disturbed_air = ball._disturb_surface_from_pointer(QPointF(64, 30))
+    ball._pointer_last_local = QPointF(28, 76)
+    ball._pointer_clock.restart()
+    QTest.qWait(10)
+    disturbed_water = ball._disturb_surface_from_pointer(QPointF(60, 76))
+
+    assert not disturbed_air
+    assert disturbed_water
+    assert ball._liquid_surface.activity > 0
+    ball.close()
+
+
+@pytest.mark.parametrize("remaining", [100, 50, 10])
+def test_codex_water_ball_render_is_identical_at_wave_loop_boundary(remaining):
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(remaining, "2 小时后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+
+    ball._wave_phase = 0
+    first_frame = ball.grab().toImage()
+    ball._wave_phase = math.tau
+    last_frame = ball.grab().toImage()
+
+    assert last_frame == first_frame
+    ball.close()
+
+
+def test_codex_full_quota_surface_reacts_and_uses_white_text_in_light_theme():
+    controller = configure_theme(APP, "dark")
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(100, "5 天后重置")
+    ball.show()
+    APP.processEvents()
+    ball._wave_timer.stop()
+    first_frame = ball.grab().toImage()
+
+    try:
+        start = QPointF(18, 44)
+        ball.enterEvent(QEnterEvent(start, start, start))
+        QTest.qWait(10)
+        assert ball._disturb_surface_from_pointer(QPointF(70, 44))
+        for _ in range(12):
+            ball._advance_wave()
+        APP.processEvents()
+        next_frame = ball.grab().toImage()
+
+        assert next_frame != first_frame
+        full_water = next_frame.pixelColor(44, 15)
+        assert full_water.blue() > full_water.red()
+
+        controller.set_mode("light")
+        APP.processEvents()
+        light_image = ball.grab().toImage()
+        white_text_pixels = sum(
+            1
+            for y in range(28, 60)
+            for x in range(12, 76)
+            if light_image.pixelColor(x, y).lightness() > 225
+        )
+        assert white_text_pixels > 40
     finally:
         controller.set_mode("dark")
         ball.close()
