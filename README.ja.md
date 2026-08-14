@@ -26,6 +26,10 @@
   <sub>DeepSeek と Xiaomi MiMo の AI Token Usage, Cost & Balance Monitor。</sub>
 </p>
 
+<p align="center">
+  <img src="docs/images/readme-hero-v1.12.0.webp" alt="TokenMeter 製品画面の概要" width="960">
+</p>
+
 TokenMeter は、DeepSeek と Xiaomi MiMo の Token 消費量、API コスト、アカウント残高、履歴傾向を確認する軽量な Windows デスクトップツールです。システムトレイに常駐し、フローティングウィジェットと展開可能な詳細パネルを提供します。
 
 ## 機能
@@ -43,7 +47,7 @@ TokenMeter は、DeepSeek と Xiaomi MiMo の Token 消費量、API コスト、
 
 | ライトテーマ | ダークテーマ |
 | --- | --- |
-| ![TokenMeter ライトテーマ](docs/images/token-spider-ui-v3-light.png) | ![TokenMeter ダークテーマ](docs/images/tokenmeter-v1.11.2-dark.png) |
+| ![TokenMeter ライトテーマ](docs/images/tokenmeter-v1.12.0-light.png) | ![TokenMeter ダークテーマ](docs/images/tokenmeter-v1.11.2-dark.png) |
 
 ## 動作要件
 

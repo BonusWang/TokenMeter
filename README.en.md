@@ -26,6 +26,10 @@
   <sub>Track DeepSeek and Xiaomi MiMo usage from a lightweight desktop floating widget.</sub>
 </p>
 
+<p align="center">
+  <img src="docs/images/readme-hero-v1.12.0.webp" alt="TokenMeter product interface overview" width="960">
+</p>
+
 TokenMeter is a lightweight Windows desktop monitor for token usage, API costs, account balances, and historical trends on DeepSeek and Xiaomi MiMo. It stays in the system tray and provides a floating widget plus an expandable detail panel.
 
 ## Features
@@ -43,7 +47,7 @@ TokenMeter is a lightweight Windows desktop monitor for token usage, API costs, 
 
 | Light theme | Dark theme |
 | --- | --- |
-| ![TokenMeter light theme](docs/images/token-spider-ui-v3-light.png) | ![TokenMeter dark theme](docs/images/tokenmeter-v1.11.2-dark.png) |
+| ![TokenMeter light theme](docs/images/tokenmeter-v1.12.0-light.png) | ![TokenMeter dark theme](docs/images/tokenmeter-v1.11.2-dark.png) |
 
 ## Requirements
 
