@@ -47,12 +47,6 @@ TokenMeter 是一款轻量级 Windows 桌面 AI 用量监控工具。它以类�
 - API Key、Bearer Token 和 Cookie 保存到 Windows 凭据管理器。
 - 支持迁移应用数据目录、当前 Windows 用户开机自启、自动更新及单实例运行。
 
-## 界面截图
-
-| 浅色主题 | 深色主题 |
-| --- | --- |
-| ![TokenMeter 浅色主题](docs/images/tokenmeter-v1.12.0-light.png) | ![TokenMeter 深色主题](docs/images/tokenmeter-v1.11.2-dark.png) |
-
 ## 系统要求
 
 - Windows 10 或 Windows 11；源码运行需要 Python 3.11+。

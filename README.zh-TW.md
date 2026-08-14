@@ -43,12 +43,6 @@ TokenMeter 是輕量級 Windows 桌面 AI Token 用量監控工具，用於查�
 - API Key、Bearer Token 與 Cookie 儲存於 Windows 認證管理員。
 - 支援資料目錄遷移、自動更新及單一執行個體。
 
-## 介面截圖
-
-| 淺色主題 | 深色主題 |
-| --- | --- |
-| ![TokenMeter 淺色主題](docs/images/tokenmeter-v1.12.0-light.png) | ![TokenMeter 深色主題](docs/images/tokenmeter-v1.11.2-dark.png) |
-
 ## 系統需求
 
 - Windows 10 或 Windows 11；從原始碼執行需要 Python 3.11+。

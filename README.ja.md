@@ -43,12 +43,6 @@ TokenMeter は、DeepSeek と Xiaomi MiMo の Token 消費量、API コスト、
 - API Key、Bearer Token、Cookie は Windows 資格情報マネージャーに保存。
 - データディレクトリ移行、自動更新、単一インスタンス実行。
 
-## スクリーンショット
-
-| ライトテーマ | ダークテーマ |
-| --- | --- |
-| ![TokenMeter ライトテーマ](docs/images/tokenmeter-v1.12.0-light.png) | ![TokenMeter ダークテーマ](docs/images/tokenmeter-v1.11.2-dark.png) |
-
 ## 動作要件
 
 - Windows 10 または Windows 11。ソース実行には Python 3.11+。

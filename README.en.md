@@ -43,12 +43,6 @@ TokenMeter is a lightweight Windows desktop monitor for token usage, API costs, 
 - API keys, Bearer tokens, and Cookies are stored in Windows Credential Manager.
 - Data-directory migration, automatic updates, and single-instance operation.
 
-## Screenshots
-
-| Light theme | Dark theme |
-| --- | --- |
-| ![TokenMeter light theme](docs/images/tokenmeter-v1.12.0-light.png) | ![TokenMeter dark theme](docs/images/tokenmeter-v1.11.2-dark.png) |
-
 ## Requirements
 
 - Windows 10 or Windows 11; Python 3.11+ for running from source.
