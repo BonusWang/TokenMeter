@@ -1029,9 +1029,11 @@ def test_minute_chart_handles_zero_cache_denominator_and_panel_defaults_to_annua
     panel.update_data(sample_data())
     assert panel.activity_stack.currentIndex() == 0
     assert panel.annual_activity_button.isChecked()
+    assert panel._minute_chart is None
     panel.minute_activity_button.click()
     assert panel.activity_stack.currentIndex() == 1
     assert panel.minute_activity_button.isChecked()
+    assert panel._minute_chart is not None
     assert not panel.minute_estimate_label.isHidden()
     assert panel.minute_estimate_label.text() == "估算"
     assert "按刷新间隔均摊" in panel.minute_estimate_label.toolTip()
@@ -1552,6 +1554,7 @@ def test_expanded_window_hides_ball_and_uses_compact_panel_size():
         widget = FloatingWidget()
         widget._data = data
         widget._refreshing = False
+        assert widget.panel is None
         widget.toggle()
         APP.processEvents()
 

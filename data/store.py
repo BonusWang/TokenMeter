@@ -282,6 +282,45 @@ def provider_usage_day(provider_id: str, observed_at: datetime) -> date:
     return provider_observed_at(provider_id, observed_at).date()
 
 
+def _load_minute_history(
+    provider_id: str, current_day: date
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[str],
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+]:
+    """Load retained minute rows once after the current refresh has been saved."""
+    current_key = current_day.isoformat()
+    minute_rows = history.minute_usage_for_day(provider_id, current_day)
+    minute_cost_rows = history.minute_cost_usage_for_day(provider_id, current_day)
+    minute_days = history.minute_usage_dates(provider_id)
+    minute_history: dict[str, list[dict[str, Any]]] = {}
+    minute_cost_history: dict[str, list[dict[str, Any]]] = {}
+    for usage_date in minute_days:
+        usage_day = date.fromisoformat(usage_date)
+        # 当前日已单独读取供悬浮面板使用；历史映射复用同一只读列表，
+        # 避免重复查询并同时保留原有字段结构。
+        minute_history[usage_date] = (
+            minute_rows
+            if usage_date == current_key
+            else history.minute_usage_for_day(provider_id, usage_day)
+        )
+        minute_cost_history[usage_date] = (
+            minute_cost_rows
+            if usage_date == current_key
+            else history.minute_cost_usage_for_day(provider_id, usage_day)
+        )
+    return (
+        minute_rows,
+        minute_cost_rows,
+        minute_days,
+        minute_history,
+        minute_cost_history,
+    )
+
+
 @dataclass
 class PerProviderData:
     provider_id: str
@@ -357,6 +396,35 @@ class TokenData:
     _last_snapshot: ClassVar["TokenData | None"] = None
     _provider_snapshots: ClassVar[dict[str, "TokenData"]] = {}
     _cache_lock: ClassVar[threading.Lock] = threading.Lock()
+
+    @staticmethod
+    def _copy_for_refresh(snapshot: "TokenData") -> "TokenData":
+        # 分钟历史会在本轮落盘后重新读取；复制旧历史只会抬高刷新峰值，
+        # 且这些旧行不会参与额度失败回退等兼容逻辑。
+        memo = {
+            id(snapshot.minute_usage): [],
+            id(snapshot.minute_usage_days): [],
+            id(snapshot.minute_usage_history): {},
+            id(snapshot.minute_cost_usage): [],
+            id(snapshot.minute_cost_usage_history): {},
+        }
+        return copy.deepcopy(snapshot, memo)
+
+    @staticmethod
+    def _copy_for_cache(data: "TokenData") -> "TokenData":
+        # 刷新完成后的分钟行不会再修改；内部快照只隔离其余可变状态，
+        # 避免为长保留期常驻一份完全相同的高容量历史副本。
+        memo = {
+            id(data.minute_usage): data.minute_usage,
+            id(data.minute_cost_usage): data.minute_cost_usage,
+        }
+        # 外层映射仍由 deepcopy 隔离，只有已完成的行列表共享，避免调用方
+        # 增删日期时改变缓存，同时把主要内存占用限制为单份。
+        for rows in data.minute_usage_history.values():
+            memo[id(rows)] = rows
+        for rows in data.minute_cost_usage_history.values():
+            memo[id(rows)] = rows
+        return copy.deepcopy(data, memo)
 
     @classmethod
     def test_connection(cls, config: Mapping[str, Any]) -> "TokenData":
@@ -434,7 +502,7 @@ class TokenData:
     def _base_snapshot(cls, provider_id: str = "") -> "TokenData":
         with cls._cache_lock:
             snapshot = cls._provider_snapshots.get(provider_id) if provider_id else cls._last_snapshot
-            return copy.deepcopy(snapshot) if snapshot else cls()
+            return cls._copy_for_refresh(snapshot) if snapshot else cls()
 
     @classmethod
     def cached_snapshot(cls, provider_id: str) -> "TokenData | None":
@@ -458,7 +526,7 @@ class TokenData:
             snapshot = cls._load_persisted_quota_snapshot(provider)
             if snapshot is not None:
                 with cls._cache_lock:
-                    cls._provider_snapshots[provider.id] = copy.deepcopy(snapshot)
+                    cls._provider_snapshots[provider.id] = cls._copy_for_cache(snapshot)
             return snapshot
         except Exception:
             config_manager.logger().exception(
@@ -779,6 +847,7 @@ class TokenData:
         minute_days: list[str] = []
         minute_history: dict[str, list[dict[str, Any]]] = {}
         minute_cost_history: dict[str, list[dict[str, Any]]] = {}
+        retention_days = 3
         if getattr(provider, "supports_estimated_minute_usage", False):
             try:
                 # 每次启动/刷新均按设置的保留天数清理；失败不能影响原有账单刷新。
@@ -786,21 +855,6 @@ class TokenData:
                 history.clear_expired_minute_usage(
                     provider.id, current_day, retention_days
                 )
-                minute_rows = history.minute_usage_for_day(provider.id, current_day)
-                minute_cost_rows = history.minute_cost_usage_for_day(provider.id, current_day)
-                minute_days = history.minute_usage_dates(provider.id)
-                minute_history = {
-                    usage_date: history.minute_usage_for_day(
-                        provider.id, date.fromisoformat(usage_date)
-                    )
-                    for usage_date in minute_days
-                }
-                minute_cost_history = {
-                    usage_date: history.minute_cost_usage_for_day(
-                        provider.id, date.fromisoformat(usage_date)
-                    )
-                    for usage_date in minute_days
-                }
                 minute_status = "empty"
             except Exception:
                 config_manager.logger().exception("Minute usage cleanup failed for %s", provider.id)
@@ -1084,23 +1138,6 @@ class TokenData:
                                 retention_days,
                                 cost_cny=cost_total,
                             )
-                            minute_rows = history.minute_usage_for_day(provider.id, current_day)
-                            minute_cost_rows = history.minute_cost_usage_for_day(
-                                provider.id, current_day
-                            )
-                            minute_days = history.minute_usage_dates(provider.id)
-                            minute_history = {
-                                usage_date: history.minute_usage_for_day(
-                                    provider.id, date.fromisoformat(usage_date)
-                                )
-                                for usage_date in minute_days
-                            }
-                            minute_cost_history = {
-                                usage_date: history.minute_cost_usage_for_day(
-                                    provider.id, date.fromisoformat(usage_date)
-                                )
-                                for usage_date in minute_days
-                            }
                         except Exception:
                             config_manager.logger().exception(
                                 "Minute usage save failed for %s", provider.id
@@ -1130,6 +1167,28 @@ class TokenData:
             else:
                 per.status = "error"
                 per.is_stale = previous_per is not None
+
+        if getattr(provider, "supports_estimated_minute_usage", False):
+            try:
+                (
+                    minute_rows,
+                    minute_cost_rows,
+                    minute_days,
+                    minute_history,
+                    minute_cost_history,
+                ) = _load_minute_history(provider.id, current_day)
+            except Exception:
+                config_manager.logger().exception(
+                    "Minute usage history read failed for %s", provider.id
+                )
+                per.errors.append(
+                    FetchError("LOCAL_STORAGE", "分时缓存", "分钟缓存读取失败")
+                )
+                minute_status = "storage_error"
+            if successes:
+                # 分时读取发生在远程聚合之后，需在这里同步最终状态。
+                per.status = "partial" if per.errors else "ok"
+                per.is_stale = bool(per.errors) or kept_cached_quota
 
         data.per_provider = [per]
         data.currency = per.currency
@@ -1170,7 +1229,7 @@ class TokenData:
             data.status = "partial" if per.errors else "ok"
             data.is_stale = per.is_stale
             with cls._cache_lock:
-                cls._provider_snapshots[provider.id] = copy.deepcopy(data)
+                cls._provider_snapshots[provider.id] = cls._copy_for_cache(data)
             if quota_refresh_succeeded:
                 try:
                     cls._save_persisted_quota_snapshot(provider, data)

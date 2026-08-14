@@ -35,8 +35,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QCalendarWidget,
     QButtonGroup,
+    QCalendarWidget,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -55,11 +55,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import runtime as config_manager
 from api.providers import PROVIDERS, list_providers
+from config import runtime as config_manager
 from core.identity import APP_DISPLAY_NAME
 from data.store import TokenData
 from ui.activity import compact_tokens
+from ui.formatting import (
+    format_codex_tokens,
+    format_money,
+    format_money_axis,
+    format_plan_active_until,
+    format_reset_countdown,
+    format_token_axis,
+    is_codex_spark_quota,
+)
 from ui.qt_heatmap import TokenActivityHeatmap
 from ui.qt_theme import (
     app_icon,
@@ -67,7 +76,6 @@ from ui.qt_theme import (
     fluent_icon,
     theme_controller,
 )
-
 
 PANEL_MIN_WIDTH = 640
 PANEL_MAX_WIDTH = 820
@@ -94,75 +102,6 @@ def _make_plot_background_transparent(plot: pg.PlotWidget) -> None:
     palette.setColor(QPalette.ColorRole.Window, transparent)
     plot.setPalette(palette)
     plot.viewport().setPalette(palette)
-
-
-def _currency_prefix(currency: str) -> str:
-    normalized = str(currency or "CNY").strip().upper()
-    return {"CNY": "¥", "USD": "$", "EUR": "€", "GBP": "£"}.get(
-        normalized, f"{normalized} "
-    )
-
-
-def format_money(value: float | Decimal | None, currency: str = "CNY") -> str:
-    if value is None:
-        return "--"
-    amount = float(value)
-    decimals = 4 if 0 < abs(amount) < 0.01 else 2
-    return f"{_currency_prefix(currency)}{amount:.{decimals}f}"
-
-
-def format_token_axis(value: float) -> str:
-    return compact_tokens(int(round(value)))
-
-
-def format_codex_tokens(value: int | float) -> str:
-    amount = int(round(value))
-    denominator, suffix = (
-        (100_000_000, "亿") if abs(amount) >= 100_000_000 else (10_000, "万")
-    )
-    text = f"{amount / denominator:.1f}".rstrip("0").rstrip(".")
-    return f"{text or '0'}{suffix}"
-
-
-def format_money_axis(value: float, currency: str = "CNY") -> str:
-    absolute = abs(value)
-    if absolute >= 100:
-        return f"{_currency_prefix(currency)}{value:,.0f}"
-    decimals = 4 if 0 < absolute < 0.01 else 2
-    return f"{_currency_prefix(currency)}{value:.{decimals}f}"
-
-
-def format_reset_countdown(value: datetime | None, now: datetime | None = None) -> str:
-    if value is None:
-        return "重置时间未知"
-    current = now or datetime.now(value.tzinfo)
-    if value.tzinfo is not None and current.tzinfo is None:
-        current = current.replace(tzinfo=value.tzinfo)
-    elif value.tzinfo is None and current.tzinfo is not None:
-        current = current.replace(tzinfo=None)
-    seconds = max(0, int((value - current).total_seconds()))
-    if seconds <= 0:
-        return "即将重置"
-    minutes = max(1, ceil(seconds / 60))
-    days, minutes = divmod(minutes, 24 * 60)
-    hours, minutes = divmod(minutes, 60)
-    if days:
-        return f"{days} 天 {hours} 小时后重置"
-    if hours:
-        return f"{hours} 小时 {minutes} 分钟后重置"
-    return f"{minutes} 分钟后重置"
-
-
-def format_plan_active_until(value: datetime | None) -> str:
-    if value is None:
-        return "--"
-    local_value = value.astimezone() if value.tzinfo is not None else value
-    return local_value.strftime("%m-%d")
-
-
-def is_codex_spark_quota(title: str) -> bool:
-    normalized = "".join(str(title or "").casefold().split())
-    return "codex-spark" in normalized
 
 
 class MoneyAxis(pg.AxisItem):
@@ -2320,11 +2259,12 @@ class MainPanel(QFrame):
         self.activity_scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self.minute_chart = MinuteUsageChart()
+        # 默认年度视图不需要两套分时 PlotWidget；首次切换时再创建，
+        # 避免仅查看额度或年度活动也常驻完整分时图表。
+        self._minute_chart: MinuteUsageChart | None = None
         self.activity_stack = QStackedWidget()
         self.activity_stack.setObjectName("activityStack")
         self.activity_stack.addWidget(self.activity_scroll)
-        self.activity_stack.addWidget(self.minute_chart)
         activity_layout.addWidget(self.activity_stack)
         content.addWidget(self.activity_card)
         self.middle_section = self.activity_card
@@ -2362,6 +2302,16 @@ class MainPanel(QFrame):
             pass
         self._refresh_icons()
         self._set_activity_view("annual")
+
+    @property
+    def minute_chart(self) -> MinuteUsageChart:
+        return self._ensure_minute_chart()
+
+    def _ensure_minute_chart(self) -> MinuteUsageChart:
+        if self._minute_chart is None:
+            self._minute_chart = MinuteUsageChart()
+            self.activity_stack.addWidget(self._minute_chart)
+        return self._minute_chart
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -2532,7 +2482,10 @@ class MainPanel(QFrame):
             and current_date.isValid()
             and data.minute_usage_status != "unavailable"
         )
-        self._render_minute_date(loading)
+        if self._minute_chart is not None or self._activity_view == "minute":
+            self._render_minute_date(loading)
+        else:
+            self._render_usage_card()
 
     def _render_minute_date(self, loading: bool) -> None:
         selected_date = self._minute_selected_date
@@ -2593,7 +2546,12 @@ class MainPanel(QFrame):
         # 两种视图的内容高度不同；同步收紧面板可消除年度页底部占位，同时保留分时图空间。
         self.activity_card.setFixedHeight(activity_height)
         self.setFixedHeight(panel_height)
-        self.activity_stack.setCurrentIndex(1 if minute_view else 0)
+        if minute_view:
+            chart = self._ensure_minute_chart()
+            self.activity_stack.setCurrentWidget(chart)
+            self._render_minute_date(loading=False)
+        else:
+            self.activity_stack.setCurrentWidget(self.activity_scroll)
         self.annual_activity_button.setChecked(not minute_view)
         self.minute_activity_button.setChecked(minute_view)
         for control in self.minute_controls:
@@ -2601,7 +2559,7 @@ class MainPanel(QFrame):
         for button in self.minute_legend_buttons.values():
             button.setVisible(minute_view)
         self.activity_summary.setText(
-            self.minute_chart.summary_text()
+            self._minute_chart.summary_text()
             if minute_view
             else self._annual_activity_summary
         )
@@ -2617,10 +2575,10 @@ class MainPanel(QFrame):
         self.minute_estimate_label.setVisible(minute_view)
 
     def _refresh_minute_control_colors(self) -> None:
-        if not hasattr(self, "minute_chart"):
+        if self._minute_chart is None:
             return
         for token_type, button in self.minute_legend_buttons.items():
-            color = self.minute_chart.legend_color(token_type)
+            color = self._minute_chart.legend_color(token_type)
             swatch = QPixmap(8, 8)
             swatch.fill(color)
             button.setIcon(QIcon(swatch))
@@ -2707,7 +2665,8 @@ class MainPanel(QFrame):
     def _on_theme_changed(self, mode: str, resolved: str) -> None:
         self.set_theme_mode(mode, resolved)
         self.status_dot.refresh_theme()
-        self.minute_chart.refresh_theme()
+        if self._minute_chart is not None:
+            self._minute_chart.refresh_theme()
         self.minute_date_edit.refresh_theme()
         self._refresh_minute_control_colors()
         self._refresh_icons()

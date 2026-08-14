@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import copy
-import ctypes
-import sys
 import threading
 import time
-from ctypes import wintypes
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -17,22 +14,23 @@ from PySide6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRunnable,
+    Qt,
     QThreadPool,
     QTimer,
-    Qt,
     Signal,
     Slot,
 )
 from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QPalette, QRegion
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMenu, QSystemTrayIcon, QWidget
 
-from config import runtime as config_manager
+from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
 from api.providers import PROVIDERS, configured_provider_ids
 from api.providers.base import FetchError
 from api.providers.mimo import MiMoProvider
+from config import runtime as config_manager
 from core.identity import APP_DISPLAY_NAME
 from data.store import PerProviderData, TokenData
-from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
+from ui.formatting import format_money, format_reset_countdown
 from ui.geometry import (
     WorkArea,
     clamp_window,
@@ -40,10 +38,12 @@ from ui.geometry import (
     expanded_panel_geometry,
 )
 from ui.qt_ball import FloatingUsageBall
-from ui.qt_panel import MainPanel, format_money, format_reset_countdown
-from ui.qt_settings import SettingsWindow
 from ui.qt_theme import theme_controller
 from ui.qt_update import AppUpdateController
+
+if TYPE_CHECKING:
+    from ui.qt_panel import MainPanel
+    from ui.qt_settings import SettingsWindow
 
 
 DEF_PANEL_W = 820
@@ -257,8 +257,8 @@ class FloatingWidget(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         self.ball = FloatingUsageBall(self._compact_size())
-        self.panel = MainPanel()
-        self.panel.hide()
+        # 图表面板会加载 pyqtgraph/NumPy；悬浮球常驻时延迟创建可显著降低基线内存。
+        self.panel: MainPanel | None = None
         self._layout.addWidget(self.ball, 0, Qt.AlignmentFlag.AlignTop)
         self._connect_ui()
         controller = theme_controller()
@@ -289,16 +289,37 @@ class FloatingWidget(QWidget):
         self.ball.resize_started.connect(self._start_resize)
         self.ball.resize_dragged.connect(self._resize_ball)
         self.ball.resize_released.connect(self._end_resize)
-        self.panel.header.pressed.connect(lambda point: self._start_drag(point, "header"))
-        self.panel.header.dragged.connect(self._move_drag)
-        self.panel.header.released.connect(self._end_drag)
-        self.panel.settings_requested.connect(self.open_settings)
-        self.panel.refresh_requested.connect(self.refresh)
-        self.panel.provider_selected.connect(self._switch_provider)
-        self.panel.close_requested.connect(self.collapse_panel)
-        if hasattr(self.panel, "theme_requested"):
-            self.panel.theme_requested.connect(self._request_theme_change)
-        self.panel.activity_height_changed.connect(self._resize_expanded_panel)
+
+    def _ensure_panel(self) -> MainPanel:
+        if self.panel is not None:
+            return self.panel
+        from ui.qt_panel import MainPanel
+
+        panel = MainPanel()
+        panel.hide()
+        panel.header.pressed.connect(lambda point: self._start_drag(point, "header"))
+        panel.header.dragged.connect(self._move_drag)
+        panel.header.released.connect(self._end_drag)
+        panel.settings_requested.connect(self.open_settings)
+        panel.refresh_requested.connect(self.refresh)
+        panel.provider_selected.connect(self._switch_provider)
+        panel.close_requested.connect(self.collapse_panel)
+        if hasattr(panel, "theme_requested"):
+            panel.theme_requested.connect(self._request_theme_change)
+        panel.activity_height_changed.connect(self._resize_expanded_panel)
+        self.panel = panel
+        controller = theme_controller()
+        panel.set_theme_mode(controller.mode, controller.resolved)
+        if self._pricing_state is None:
+            panel.set_pricing_state(False)
+        else:
+            panel.set_pricing_state(
+                True,
+                self._pricing_state.is_peak,
+                self._pricing_state.label,
+                self._pricing_state.tooltip,
+            )
+        return panel
 
     @Slot(str)
     def _request_theme_change(self, mode: str) -> None:
@@ -427,7 +448,7 @@ class FloatingWidget(QWidget):
     def _expanded_size(self) -> tuple[int, int]:
         size = config_manager.get("WIDGET_EXPANDED_SIZE", (DEF_PANEL_W, DEF_PANEL_H))
         width = max(640, min(DEF_PANEL_W, int(size[0])))
-        return width, self.panel.height()
+        return width, self._ensure_panel().height()
 
     def _resize_expanded_panel(self, height: int) -> None:
         if not self._expanded:
@@ -446,7 +467,8 @@ class FloatingWidget(QWidget):
         else:
             work = WorkArea(screen.x(), screen.y(), screen.x() + screen.width(), screen.y() + screen.height())
             x, y = clamp_window(saved[0], saved[1], size, size, work)
-        self.panel.hide()
+        if self.panel is not None:
+            self.panel.hide()
         self.ball.show()
         self.setFixedSize(size, size)
         self.clearMask()
@@ -467,11 +489,12 @@ class FloatingWidget(QWidget):
             self.clearMask()
 
     def _arrange_expanded(self) -> None:
+        panel = self._ensure_panel()
         while self._layout.count():
             self._layout.takeAt(0)
         # 展开态完全由面板替代悬浮球，避免重复入口并缩小窗口占用。
         self.ball.hide()
-        self._layout.addWidget(self.panel, 1)
+        self._layout.addWidget(panel, 1)
 
     def toggle(self) -> None:
         if self._transitioning:
@@ -488,6 +511,7 @@ class FloatingWidget(QWidget):
         self._transitioning = True
         size = self._compact_size()
         try:
+            panel = self._ensure_panel()
             work = self._work_area()
             geometry = expanded_panel_geometry(
                 (self.x(), self.y(), size, size), self._expanded_size(), work
@@ -499,16 +523,16 @@ class FloatingWidget(QWidget):
             self.clearMask()
             self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, False)
             self._arrange_expanded()
-            self.panel.show()
+            panel.show()
             self.setFixedSize(width, height)
             self.move(x, y)
             self.show()
             self._apply_native_window_shape(compact=False)
             self.raise_()
             self.activateWindow()
-            self.panel.setFocus(Qt.FocusReason.OtherFocusReason)
+            panel.setFocus(Qt.FocusReason.OtherFocusReason)
             loading = self._refreshing and self._data.last_success_at is None
-            self.panel.update_data(self._data, loading, self._refreshing)
+            panel.update_data(self._data, loading, self._refreshing)
             self.refresh()
         finally:
             self._transitioning = False
@@ -529,7 +553,8 @@ class FloatingWidget(QWidget):
                 work,
             )
             self._expanded = False
-            self.panel.hide()
+            if self.panel is not None:
+                self.panel.hide()
             self.setFixedSize(size, size)
             while self._layout.count():
                 self._layout.takeAt(0)
@@ -905,6 +930,8 @@ class FloatingWidget(QWidget):
         start_cookie_acquisition: bool = False,
     ) -> None:
         if self._settings_window is None:
+            from ui.qt_settings import SettingsWindow
+
             # Reuse the same dialog so repeated opens do not duplicate signal
             # connections or leave hidden child windows behind.
             self._settings_window = SettingsWindow(
@@ -949,14 +976,13 @@ class FloatingWidget(QWidget):
         except Exception:
             config_manager.logger().exception("Quick provider switch failed")
             loading = self._refreshing and self._data.last_success_at is None
-            self.panel.update_data(self._data, loading, self._refreshing)
+            if self.panel is not None:
+                self.panel.update_data(self._data, loading, self._refreshing)
             return
         self._sync_pricing_state(notify_transition=False)
         provider_cls = PROVIDERS[provider_id]
         cached = self._provider_results.get(provider_id)
-        if cached is not None:
-            cached = copy.deepcopy(cached)
-        else:
+        if cached is None:
             cached = TokenData.cached_snapshot(provider_id)
         self._prepare_scope_switch(
             cached
@@ -1095,7 +1121,10 @@ class FloatingWidget(QWidget):
             self._in_flight_requests.pop(provider_id, None)
             started_at = self._provider_task_started.pop(provider_id, None)
             pending = self._pending_refreshes.pop(provider_id, None)
-            self._provider_results[provider_id] = copy.deepcopy(result)
+            # Refresh results are immutable after delivery; the current view and
+            # provider switch cache can safely share them instead of retaining a
+            # second copy of all daily and minute history rows.
+            self._provider_results[provider_id] = result
             is_current = provider_id == str(
                 config_manager.get("ACTIVE_PROVIDER", "")
             ).strip().lower()
@@ -1300,9 +1329,10 @@ class FloatingWidget(QWidget):
                 "--" if loading else format_money(self._data.today_cost_cny, self._data.currency),
                 "--" if loading else format_money(self._data.balance_cny, self._data.currency),
             )
-        self.panel.set_refreshing(self._refreshing)
-        if self._expanded:
-            self.panel.update_data(self._data, loading, self._refreshing)
+        if self.panel is not None:
+            self.panel.set_refreshing(self._refreshing)
+            if self._expanded:
+                self.panel.update_data(self._data, loading, self._refreshing)
 
     def _periodic_refresh(self) -> None:
         self.refresh(queue_if_busy=False, reason="periodic_current")
@@ -1343,16 +1373,18 @@ class FloatingWidget(QWidget):
         if not enabled:
             self._pricing_timer.stop()
             self._pricing_state = None
-            self.panel.set_pricing_state(False)
+            if self.panel is not None:
+                self.panel.set_pricing_state(False)
             self.ball.set_peak_highlight(False)
             return
 
         previous = self._pricing_state
         current = pricing_state(config_manager.all_config())
         self._pricing_state = current
-        self.panel.set_pricing_state(
-            True, current.is_peak, current.label, current.tooltip
-        )
+        if self.panel is not None:
+            self.panel.set_pricing_state(
+                True, current.is_peak, current.label, current.tooltip
+            )
         self.ball.set_peak_highlight(current.is_peak)
         if (
             notify_transition

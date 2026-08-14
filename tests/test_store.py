@@ -785,7 +785,7 @@ class StoreTests(unittest.TestCase):
                 side_effect=lambda _provider, usage_day: (
                     historical_rows if usage_day == date(2026, 7, 2) else []
                 ),
-            ),
+            ) as minute_usage_for_day,
             patch(
                 "data.store.history.minute_usage_dates",
                 return_value=["2026-07-02", "2026-07-03"],
@@ -797,6 +797,31 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(data.minute_usage_days, ["2026-07-02", "2026-07-03"])
         self.assertEqual(data.minute_usage_history["2026-07-02"], historical_rows)
         self.assertEqual(data.minute_usage_history["2026-07-03"], [])
+        self.assertIs(data.minute_usage_history["2026-07-03"], data.minute_usage)
+        self.assertIs(
+            data.minute_cost_usage_history["2026-07-03"], data.minute_cost_usage
+        )
+        self.assertEqual(minute_usage_for_day.call_count, 2)
+
+        snapshot = TokenData._provider_snapshots["deepseek"]
+        self.assertIsNot(snapshot, data)
+        self.assertIsNot(snapshot.minute_usage_history, data.minute_usage_history)
+        self.assertIs(
+            snapshot.minute_usage_history["2026-07-02"],
+            data.minute_usage_history["2026-07-02"],
+        )
+        self.assertIsNot(
+            snapshot.minute_cost_usage_history, data.minute_cost_usage_history
+        )
+        self.assertIs(
+            snapshot.minute_cost_usage_history["2026-07-03"],
+            data.minute_cost_usage_history["2026-07-03"],
+        )
+        self.assertEqual(TokenData._base_snapshot("deepseek").minute_usage_history, {})
+        isolated = TokenData.cached_snapshot("deepseek")
+        self.assertIsNotNone(isolated)
+        self.assertIsNot(isolated.minute_usage_history, data.minute_usage_history)
+        self.assertEqual(isolated.minute_usage_history, data.minute_usage_history)
 
 
 if __name__ == "__main__":

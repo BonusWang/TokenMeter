@@ -671,6 +671,7 @@ def save_estimated_minute_usage(
 
 def minute_usage_for_day(provider: str, usage_day: date) -> list[dict[str, Any]]:
     """读取指定日期的临时估算数据；稀疏行由界面补齐为 1,440 个分钟点。"""
+    result: list[dict[str, Any]] = []
     with _connect() as connection:
         rows = connection.execute(
             """SELECT minute_index, token_type, token_amount
@@ -678,19 +679,22 @@ def minute_usage_for_day(provider: str, usage_day: date) -> list[dict[str, Any]]
                 WHERE provider = ? AND usage_date = ?
                 ORDER BY minute_index, token_type""",
             (provider, usage_day.isoformat()),
-        ).fetchall()
-    return [
-        {
-            "minute": int(minute_index),
-            "token_type": str(token_type),
-            "token_amount": int(token_amount or 0),
-        }
-        for minute_index, token_type, token_amount in rows
-    ]
+        )
+        # 直接流式归一化，避免原始 SQLite 元组与最终字典同时占用一整天内存。
+        for minute_index, token_type, token_amount in rows:
+            result.append(
+                {
+                    "minute": int(minute_index),
+                    "token_type": str(token_type),
+                    "token_amount": int(token_amount or 0),
+                }
+            )
+    return result
 
 
 def minute_cost_usage_for_day(provider: str, usage_day: date) -> list[dict[str, Any]]:
     """读取指定日期的分钟费用估算；缺失行表示该分钟尚无可靠费用。"""
+    result: list[dict[str, Any]] = []
     with _connect() as connection:
         rows = connection.execute(
             """SELECT minute_index, cost_cny
@@ -698,16 +702,15 @@ def minute_cost_usage_for_day(provider: str, usage_day: date) -> list[dict[str, 
                 WHERE provider = ? AND usage_date = ?
                 ORDER BY minute_index""",
             (provider, usage_day.isoformat()),
-        ).fetchall()
-    result: list[dict[str, Any]] = []
-    for minute_index, raw_cost in rows:
-        try:
-            cost = Decimal(str(raw_cost))
-        except (InvalidOperation, ValueError):
-            config_manager.logger().warning("Skipped malformed cached minute cost")
-            continue
-        if cost.is_finite():
-            result.append({"minute": int(minute_index), "cost_cny": cost})
+        )
+        for minute_index, raw_cost in rows:
+            try:
+                cost = Decimal(str(raw_cost))
+            except (InvalidOperation, ValueError):
+                config_manager.logger().warning("Skipped malformed cached minute cost")
+                continue
+            if cost.is_finite():
+                result.append({"minute": int(minute_index), "cost_cny": cost})
     return result
 
 
@@ -737,14 +740,14 @@ def total_cost(provider: str | None = None) -> Decimal:
     if provider:
         query += " WHERE provider = ?"
         params = (provider,)
-    with _connect() as connection:
-        rows = connection.execute(query, params).fetchall()
     total = Decimal("0")
-    for (cost,) in rows:
-        try:
-            total += Decimal(str(cost or "0"))
-        except (InvalidOperation, ValueError):
-            config_manager.logger().warning("Skipped malformed cached cost")
+    with _connect() as connection:
+        # 保留 Decimal 累加精度，同时流式读取以免大历史表产生额外结果列表。
+        for (cost,) in connection.execute(query, params):
+            try:
+                total += Decimal(str(cost or "0"))
+            except (InvalidOperation, ValueError):
+                config_manager.logger().warning("Skipped malformed cached cost")
     return total
 
 
@@ -757,19 +760,18 @@ def recent_daily(days: int = 371, provider: str | None = None) -> list[dict[str,
         query += " AND provider = ?"
         params.append(provider)
     query += " ORDER BY usage_date"
-    with _connect() as connection:
-        rows = connection.execute(query, params).fetchall()
     daily: dict[str, dict[str, Any]] = {}
-    for usage_date, tokens, cost in rows:
-        item = daily.setdefault(
-            str(usage_date),
-            {"date": str(usage_date), "tokens": 0, "cost_cny": Decimal("0")},
-        )
-        item["tokens"] += int(tokens or 0)
-        try:
-            item["cost_cny"] += Decimal(str(cost or "0"))
-        except (InvalidOperation, ValueError):
-            config_manager.logger().warning("Skipped malformed cached daily cost")
+    with _connect() as connection:
+        for usage_date, tokens, cost in connection.execute(query, params):
+            item = daily.setdefault(
+                str(usage_date),
+                {"date": str(usage_date), "tokens": 0, "cost_cny": Decimal("0")},
+            )
+            item["tokens"] += int(tokens or 0)
+            try:
+                item["cost_cny"] += Decimal(str(cost or "0"))
+            except (InvalidOperation, ValueError):
+                config_manager.logger().warning("Skipped malformed cached daily cost")
     return list(daily.values())
 
 

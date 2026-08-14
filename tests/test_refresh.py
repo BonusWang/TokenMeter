@@ -323,17 +323,19 @@ class RefreshTests(unittest.TestCase):
     def test_non_current_provider_result_does_not_replace_current_data(self):
         widget = widget_stub()
         current = TokenData(balance_cny=2)
+        background = TokenData(balance_cny=1)
         widget._data = current
         widget._refreshing = True
         finish(
             widget,
             "deepseek",
             1,
-            TokenData(balance_cny=1),
+            background,
             active_provider="codex",
         )
         self.assertIs(widget._data, current)
         self.assertTrue(widget._refreshing)
+        self.assertIs(widget._provider_results["deepseek"], background)
         self.assertEqual(widget._provider_results["deepseek"].balance_cny, 1)
 
     def test_current_provider_result_updates_interface(self):
