@@ -15,7 +15,7 @@ os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 import config_manager
 from api.deepseek import APIError
 from api.providers import configured_provider_ids
-from api.providers.base import build_session
+from api.providers.base import QuotaMetric, build_session
 from api.providers.codex import CodexProvider
 from api.providers.deepseek import DeepSeekProvider
 from api.providers.mimo import MiMoProvider
@@ -86,18 +86,36 @@ class MultiProviderTests(unittest.TestCase):
             return_value=((('2026-08-09', 12_000),), ())
         )
         provider._session.get = Mock(
+            return_value=response(
+                {
+                    "plan_type": "pro",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 27,
+                            "reset_at": 1785816000,
+                            "limit_window_seconds": 604800,
+                        },
+                    },
+                    "credits": {"has_credits": True, "balance": "14.5"},
+                }
+            )
+        )
+        provider._metadata_session.get = Mock(
             side_effect=[
                 response(
                     {
-                        "plan_type": "pro",
-                        "rate_limit": {
-                            "primary_window": {
-                                "used_percent": 27,
-                                "reset_at": 1785816000,
-                                "limit_window_seconds": 604800,
-                            },
+                        "stats": {
+                            "lifetime_tokens": 2_607_632_527,
+                            "peak_daily_tokens": 202_936_827,
+                            "longest_running_turn_sec": 3_155,
+                            "current_streak_days": 4,
+                            "longest_streak_days": 27,
+                            "daily_usage_buckets": [
+                                {"start_date": "2026-04-02", "tokens": 6_124_138},
+                                {"start_date": "2026-08-12", "tokens": 202_936_827},
+                            ],
                         },
-                        "credits": {"has_credits": True, "balance": "14.5"},
+                        "metadata": {},
                     }
                 ),
                 response({"active_until": "2026-08-11T06:17:00Z"}),
@@ -117,20 +135,245 @@ class MultiProviderTests(unittest.TestCase):
             quota.account_plan_active_until,
             datetime(2026, 8, 11, 6, 17, tzinfo=timezone.utc),
         )
-        self.assertEqual(quota.activity, (("2026-08-09", 12_000),))
-        self.assertEqual(provider._session.get.call_count, 2)
+        self.assertEqual(quota.activity, (
+            ("2026-04-02", 6_124_138),
+            ("2026-08-12", 202_936_827),
+        ))
         self.assertEqual(
-            provider._session.get.call_args_list[1].kwargs["params"],
+            [item.value for item in quota.statistics],
+            ["26.1亿", "2亿", "52分 35秒", "4 天", "27 天"],
+        )
+        self.assertTrue(
+            all(item.detail == "来自 Codex 账号统计" for item in quota.statistics)
+        )
+        self.assertEqual(provider._session.get.call_count, 1)
+        self.assertEqual(provider._metadata_session.get.call_count, 2)
+        self.assertEqual(
+            provider._metadata_session.get_adapter("https://").max_retries.total,
+            0,
+        )
+        self.assertEqual(
+            provider._session.get.call_args_list[0].kwargs["headers"]["originator"],
+            "Codex Desktop",
+        )
+        self.assertEqual(
+            provider._session.get.call_args_list[0].kwargs["timeout"], (3, 10)
+        )
+        self.assertTrue(
+            all(
+                call.kwargs["timeout"] == (3, 5)
+                for call in provider._metadata_session.get.call_args_list
+            )
+        )
+        self.assertEqual(
+            provider._metadata_session.get.call_args_list[1].kwargs["params"],
             {"account_id": "account"},
         )
+
+    def test_codex_refreshes_quota_without_refetching_recent_activity(self):
+        claims = {"email": "activity-cache@example.com"}
+        cache_key = "email:activity-cache@example.com"
+        today = datetime.now().astimezone().date()
+        yesterday = today - timedelta(days=1)
+        with CodexProvider._session_cache_lock:
+            CodexProvider._activity_cache.pop(cache_key, None)
+
+        first = CodexProvider()
+        second = CodexProvider()
+        first._credentials = Mock(return_value=("access", None, claims))
+        second._credentials = Mock(return_value=("access", None, claims))
+        first._local_activity = Mock(
+            return_value=(
+                (
+                    (yesterday.isoformat(), 9_999),
+                    (today.isoformat(), 7_000),
+                ),
+                (),
+            )
+        )
+        second._local_activity = Mock(return_value=((), ()))
+        first._session.get = Mock(
+            return_value=response(
+                {
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 10,
+                            "reset_at": 1785816000,
+                            "limit_window_seconds": 604800,
+                        }
+                    }
+                }
+            )
+        )
+        first._metadata_session.get = Mock(
+            return_value=response(
+                {
+                    "stats": {
+                        "lifetime_tokens": 12_000,
+                        "daily_usage_buckets": [
+                            {"start_date": yesterday.isoformat(), "tokens": 3_000}
+                        ],
+                    },
+                    "metadata": {},
+                }
+            )
+        )
+        second._session.get = Mock(
+            return_value=response(
+                {
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 20,
+                            "reset_at": 1785816000,
+                            "limit_window_seconds": 604800,
+                        }
+                    }
+                }
+            )
+        )
+        second._metadata_session.get = Mock()
+        try:
+            first_quota, first_error = first.fetch_quota()
+            second_quota, second_error = second.fetch_quota()
+        finally:
+            first.close()
+            second.close()
+            with CodexProvider._session_cache_lock:
+                CodexProvider._activity_cache.pop(cache_key, None)
+
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertEqual(first_quota.windows[0].used_percent, 10)
+        self.assertEqual(second_quota.windows[0].used_percent, 20)
+        self.assertEqual(second_quota.activity, first_quota.activity)
+        self.assertEqual(second_quota.weekly_activity, first_quota.weekly_activity)
+        self.assertEqual(second_quota.statistics, first_quota.statistics)
+        self.assertEqual(dict(first_quota.activity)[yesterday.isoformat()], 3_000)
+        self.assertNotIn(today.isoformat(), dict(first_quota.activity))
+        self.assertEqual(dict(first_quota.weekly_activity)[today.isoformat()], 7_000)
+        self.assertEqual(first_quota.statistics[0].value, "1.2万")
+        self.assertEqual(first_quota.statistics[0].detail, "来自 Codex 账号统计")
+        self.assertEqual(first_quota.activity_source, "interface")
+        self.assertEqual(first_quota.weekly_activity_source, "mixed")
+        self.assertEqual(first_quota.statistics_source, "interface")
+        self.assertEqual(second_quota.activity_source, "cache")
+        self.assertEqual(second_quota.weekly_activity_source, "cache")
+        self.assertEqual(second_quota.statistics_source, "cache")
+        self.assertEqual(
+            [call.args[0] for call in first._session.get.call_args_list],
+            ["https://chatgpt.com/backend-api/wham/usage"],
+        )
+        self.assertEqual(
+            [call.args[0] for call in first._metadata_session.get.call_args_list],
+            ["https://chatgpt.com/backend-api/wham/profiles/me"],
+        )
+        self.assertEqual(
+            [call.args[0] for call in second._session.get.call_args_list],
+            ["https://chatgpt.com/backend-api/wham/usage"],
+        )
+        self.assertEqual(CodexProvider._activity_cache_ttl_seconds, 3_600)
+        first._local_activity.assert_called_once_with()
+        second._local_activity.assert_not_called()
+        second._metadata_session.get.assert_not_called()
+
+    def test_codex_activity_cache_expires_after_one_hour(self):
+        cache_key = "account:activity-cache-expiry"
+        first_activity = (
+            (("2026-08-12", 3_000),),
+            (QuotaMetric("累计 Token 数", "1万"),),
+        )
+        refreshed_activity = (
+            (("2026-08-12", 4_000),),
+            (QuotaMetric("累计 Token 数", "2万"),),
+        )
+        provider = CodexProvider()
+        provider._profile_activity = Mock(
+            side_effect=[first_activity, refreshed_activity]
+        )
+        provider._local_activity = Mock(return_value=((), ()))
+        try:
+            with patch("api.providers.codex.time.monotonic", return_value=100.0):
+                initial = provider._activity_snapshot(cache_key, {})
+            with patch("api.providers.codex.time.monotonic", return_value=3_699.0):
+                cached = provider._activity_snapshot(cache_key, {})
+            with patch("api.providers.codex.time.monotonic", return_value=3_700.0):
+                refreshed = provider._activity_snapshot(cache_key, {})
+        finally:
+            provider.close()
+            with CodexProvider._session_cache_lock:
+                CodexProvider._activity_cache.pop(cache_key, None)
+
+        expected_initial = (first_activity[0], first_activity[0], first_activity[1])
+        expected_refreshed = (
+            refreshed_activity[0],
+            refreshed_activity[0],
+            refreshed_activity[1],
+        )
+        self.assertEqual(initial, expected_initial)
+        self.assertEqual(cached, expected_initial)
+        self.assertEqual(refreshed, expected_refreshed)
+        self.assertEqual(provider._profile_activity.call_count, 2)
+        self.assertEqual(provider._local_activity.call_count, 2)
+
+    def test_codex_persisted_snapshot_identity_is_stable_and_non_secret(self):
+        provider = CodexProvider()
+        provider._credentials = Mock(
+            return_value=("access-secret", "account-123", {"email": "a@example.com"})
+        )
+        try:
+            first = provider.snapshot_identity()
+            second = provider.snapshot_identity()
+            provider._credentials = Mock(
+                return_value=("other-secret", "account-456", {"email": "b@example.com"})
+            )
+            different = provider.snapshot_identity()
+        finally:
+            provider.close()
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 64)
+        self.assertNotIn("account-123", first)
+        self.assertNotIn("a@example.com", first)
+        self.assertNotEqual(first, different)
+
+    def test_codex_activity_failure_keeps_the_last_server_snapshot(self):
+        cache_key = "account:stale-activity-cache"
+        server_activity = (
+            (("2026-08-12", 3_000),),
+            (("2026-08-12", 3_000),),
+            (QuotaMetric("累计 Token 数", "1万", "来自 Codex 账号统计"),),
+        )
+        local_activity = (
+            (("2026-08-12", 9_000),),
+            (QuotaMetric("累计 Token 数", "9万", "本机估算"),),
+        )
+        provider = CodexProvider()
+        provider._profile_activity = Mock(return_value=None)
+        provider._local_activity = Mock(return_value=local_activity)
+        with CodexProvider._session_cache_lock:
+            CodexProvider._activity_cache[cache_key] = (100.0, server_activity)
+        try:
+            with patch("api.providers.codex.time.monotonic", return_value=3_701.0):
+                result = provider._activity_snapshot(cache_key, {})
+        finally:
+            provider.close()
+            with CodexProvider._session_cache_lock:
+                CodexProvider._activity_cache.pop(cache_key, None)
+
+        self.assertEqual(result, server_activity)
+        provider._profile_activity.assert_called_once()
+        provider._local_activity.assert_called_once_with()
 
     def test_codex_subscription_metadata_failure_does_not_discard_quota(self):
         provider = CodexProvider()
         provider._credentials = Mock(return_value=("access", "failed-account", {}))
         provider._local_activity = Mock(return_value=((), ()))
         provider._session.get = Mock(
+            return_value=response({"plan_type": "plus", "rate_limit": {}})
+        )
+        provider._metadata_session.get = Mock(
             side_effect=[
-                response({"plan_type": "plus", "rate_limit": {}}),
+                response({}, status=500),
                 requests.Timeout(),
             ]
         )
@@ -214,7 +457,7 @@ class MultiProviderTests(unittest.TestCase):
             finally:
                 provider.close()
 
-        self.assertEqual(dict(activity)[today.isoformat()], 21_000)
+        self.assertEqual(dict(activity)[today.isoformat()], 15_000)
         self.assertEqual(dict(activity)[yesterday.isoformat()], 6_000)
         self.assertEqual([item.title for item in statistics], [
             "累计 Token 数",
@@ -223,7 +466,43 @@ class MultiProviderTests(unittest.TestCase):
             "当前连续天数",
             "最长连续天数",
         ])
-        self.assertEqual([item.value for item in statistics[:3]], ["2.7万", "2.1万", "52分 35秒"])
+        self.assertEqual([item.value for item in statistics[:3]], ["2.1万", "1.5万", "52分 35秒"])
+        self.assertTrue(all("本机 Codex 会话日志估算" in item.detail for item in statistics))
+
+    def test_codex_profile_stats_error_falls_back_to_local_activity(self):
+        today = datetime.now().astimezone().date().isoformat()
+        local_statistics = (
+            QuotaMetric("累计 Token 数", "1万", "本机估算"),
+        )
+        provider = CodexProvider()
+        provider._credentials = Mock(return_value=("access", None, {}))
+        provider._local_activity = Mock(
+            return_value=(((today, 10_000),), local_statistics)
+        )
+        provider._session.get = Mock(
+            return_value=response({"plan_type": "plus", "rate_limit": {}})
+        )
+        provider._metadata_session.get = Mock(
+            return_value=response(
+                {
+                    "stats": {"lifetime_tokens": 99_000},
+                    "metadata": {"stats_error": "temporarily unavailable"},
+                }
+            )
+        )
+        try:
+            quota, error = provider.fetch_quota()
+        finally:
+            provider.close()
+
+        self.assertIsNone(error)
+        self.assertEqual(quota.activity, ())
+        self.assertEqual(quota.weekly_activity, ((today, 10_000),))
+        self.assertEqual(quota.statistics, ())
+        self.assertEqual(quota.weekly_activity_source, "local")
+        self.assertEqual(quota.activity_source, "")
+        self.assertEqual(quota.statistics_source, "")
+        provider._local_activity.assert_called_once_with()
 
 
 class MiMoProviderTests(unittest.TestCase):

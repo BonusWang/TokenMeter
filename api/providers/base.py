@@ -67,6 +67,10 @@ class ProviderQuota:
     account_label: str = ""
     plan: str = ""
     account_plan_active_until: datetime | None = None
+    activity_source: str = ""
+    weekly_activity: tuple[tuple[str, int], ...] = ()
+    weekly_activity_source: str = ""
+    statistics_source: str = ""
 
 
 def _decimal(value: Any) -> Decimal:
@@ -138,6 +142,10 @@ class Provider:
 
     def reset_refresh_cache(self) -> None:
         """Reset data that is valid only within one refresh task."""
+
+    def snapshot_identity(self) -> str:
+        """Return a stable non-secret identity for persisted provider snapshots."""
+        return ""
 
     def close(self) -> None:
         """Release provider-owned resources."""

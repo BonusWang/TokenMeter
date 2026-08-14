@@ -26,7 +26,7 @@
   <sub>Codex Subscription Quota, DeepSeek & MiMo Token Usage Monitor.</sub>
 </p>
 
-TokenMeter 是一款轻量级 Windows 桌面 AI 用量监控工具。它以类似 [CodexBar](https://github.com/steipete/CodexBar) 的方式显示 Codex 订阅额度、剩余比例与重置倒计时，并从本机 Codex 会话记录生成年度 Token 活动和连续使用统计；DeepSeek 与 Xiaomi MiMo 继续展示 Token、费用、余额和历史趋势。
+TokenMeter 是一款轻量级 Windows 桌面 AI 用量监控工具。它以类似 [CodexBar](https://github.com/steipete/CodexBar) 的方式显示 Codex 订阅额度、剩余比例、重置倒计时和账号 Token 活动；DeepSeek 与 Xiaomi MiMo 继续展示 Token、费用、余额和历史趋势。
 
 ## 功能
 
@@ -35,9 +35,10 @@ TokenMeter 是一款轻量级 Windows 桌面 AI 用量监控工具。它以类�
 - 悬浮球和系统托盘常驻；Codex 以深浅主题水球显示周额度水位、剩余百分比和重置倒计时，DeepSeek/MiMo 保留金额视图。
 - 提供浅色、深色及跟随 Windows 的主题。
 - Codex 按接口返回的窗口时长展示当前周额度与重置时间，并显示订阅套餐和到期日期，不在面板展示账户邮箱；右侧显示近 7 天 Token 使用量，同时保留年度活动、累计/峰值 Token、按单个任务计算的最长聊天和连续使用天数。
+- Codex 额度按“刷新间隔”设置更新；底部使用统计、近 7 天图和活动热力图复用 1 小时缓存。底部统计与热力图始终采用官方数据，只有近 7 天图会在接口缺少当天记录时使用本机会话日志估算，次日同步后由官方数据替换。
 - Codex 默认读取本机 CLI 目录；非默认位置通过只读目录选择器设置，并兼容旧版已保存的 `auth.json` 文件路径。
 - DeepSeek 支持峰谷计价提示；MiMo Cookie 可通过专用 Chrome 会话获取和续期。
-- 网络异常时保留最近一次成功额度，并继续更新本地 Token 活动；本地统计不会覆盖远程额度更新时间。
+- 面板状态栏和悬浮提示会区分接口、缓存与近 7 天当天估算数据；断网、超时、限流及服务异常时按匿名账号指纹恢复最后成功的额度、统计和活动数据，完全退出后离线重启也不会清空。
 - 历史数据缓存在本地 SQLite；自动更新前备份 `usage.db`，分时数据按设置天数的 2 倍保护期清理并记录清理明细。
 - API Key、Bearer Token 和 Cookie 保存到 Windows 凭据管理器。
 - 支持迁移应用数据目录、自动更新及单实例运行。

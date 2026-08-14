@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import copy
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from collections.abc import Mapping
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import api.deepseek as ds  # 兼容 v1.0 中对 data.store.ds 的测试和扩展引用。
-from config import runtime as config_manager
+import api.deepseek as ds  # noqa: F401  # 兼容 v1.0 中对 data.store.ds 的测试和扩展引用。
 from api.providers import active_providers
 from api.providers.base import FetchError, ModelUsage, QuotaMetric, QuotaWindow
+from config import runtime as config_manager
 from data import history
 
 TOKEN_TYPES = {
@@ -24,6 +24,14 @@ TOKEN_TYPES = {
 }
 ACTIVITY_DAYS = 365
 HISTORY_SYNC_BATCH_SIZE = 2
+_TRANSIENT_QUOTA_ERROR_CODES = {
+    "INVALID_RESPONSE",
+    "NETWORK_ERROR",
+    "NETWORK_TIMEOUT",
+    "RATE_LIMITED",
+    "SERVER_ERROR",
+    "UNKNOWN_ERROR",
+}
 
 
 def top_model_stats(
@@ -295,6 +303,10 @@ class PerProviderData:
     account_label: str = ""
     account_plan: str = ""
     account_plan_active_until: datetime | None = None
+    quota_source: str = ""
+    activity_source: str = ""
+    weekly_activity_source: str = ""
+    statistics_source: str = ""
     errors: list[FetchError] = field(default_factory=list)
     status: str = "loading"
     is_stale: bool = False
@@ -322,6 +334,10 @@ class TokenData:
     account_label: str = ""
     account_plan: str = ""
     account_plan_active_until: datetime | None = None
+    quota_source: str = ""
+    activity_source: str = ""
+    weekly_activity_source: str = ""
+    statistics_source: str = ""
     status: str = "loading"
     last_success_at: datetime | None = None
     last_attempt_at: datetime | None = None
@@ -329,6 +345,7 @@ class TokenData:
     is_stale: bool = False
     last_updated: str = ""
     daily_usage: list[dict[str, Any]] = field(default_factory=list)
+    weekly_usage: list[dict[str, Any]] = field(default_factory=list)
     minute_usage: list[dict[str, Any]] = field(default_factory=list)
     minute_usage_status: str = "unavailable"
     minute_usage_date: str = ""
@@ -427,6 +444,254 @@ class TokenData:
             return copy.deepcopy(snapshot) if snapshot else None
 
     @classmethod
+    def persisted_snapshot(
+        cls, config: Mapping[str, Any] | None = None
+    ) -> "TokenData | None":
+        """Load the selected account's disk snapshot without making a network call."""
+        providers = list(active_providers(config))
+        if not providers:
+            return None
+        provider = providers[0]
+        try:
+            if not getattr(provider, "supports_subscription_quota", False):
+                return None
+            snapshot = cls._load_persisted_quota_snapshot(provider)
+            if snapshot is not None:
+                with cls._cache_lock:
+                    cls._provider_snapshots[provider.id] = copy.deepcopy(snapshot)
+            return snapshot
+        except Exception:
+            config_manager.logger().exception(
+                "Persisted quota snapshot preload failed for %s", provider.id
+            )
+            return None
+        finally:
+            close = getattr(provider, "close", None)
+            if close is not None:
+                close()
+
+    @staticmethod
+    def _snapshot_identity(provider) -> str:
+        identity_getter = getattr(provider, "snapshot_identity", None)
+        if not callable(identity_getter):
+            return ""
+        try:
+            return str(identity_getter() or "").strip()
+        except Exception:
+            config_manager.logger().warning(
+                "Provider snapshot identity failed: provider=%s", provider.id
+            )
+            return ""
+
+    @classmethod
+    def _load_persisted_quota_snapshot(cls, provider) -> "TokenData | None":
+        account_key = cls._snapshot_identity(provider)
+        record = history.load_provider_quota_snapshot(provider.id, account_key)
+        if record is None:
+            return None
+        payload, saved_at = record
+        try:
+            snapshot_version = int(payload.get("version") or 0)
+        except (TypeError, ValueError):
+            snapshot_version = 0
+
+        def parsed_datetime(value: Any) -> datetime | None:
+            if not value:
+                return None
+            return datetime.fromisoformat(str(value))
+
+        def parsed_metrics(key: str) -> list[QuotaMetric]:
+            result: list[QuotaMetric] = []
+            values = payload.get(key)
+            if not isinstance(values, list):
+                return result
+            for item in values:
+                if not isinstance(item, dict):
+                    continue
+                result.append(
+                    QuotaMetric(
+                        str(item.get("title") or ""),
+                        str(item.get("value") or ""),
+                        str(item.get("detail") or ""),
+                    )
+                )
+            return result
+
+        try:
+            windows: list[QuotaWindow] = []
+            window_values = payload.get("windows")
+            if isinstance(window_values, list):
+                for item in window_values:
+                    if not isinstance(item, dict):
+                        continue
+                    minutes = item.get("window_minutes")
+                    windows.append(
+                        QuotaWindow(
+                            str(item.get("id") or ""),
+                            str(item.get("title") or ""),
+                            max(0.0, min(100.0, float(item.get("used_percent") or 0))),
+                            resets_at=parsed_datetime(item.get("resets_at")),
+                            window_minutes=None if minutes is None else int(minutes),
+                            detail=str(item.get("detail") or ""),
+                        )
+                    )
+            metrics = parsed_metrics("metrics")
+            statistics = parsed_metrics("statistics")
+
+            def parsed_activity(key: str) -> list[dict[str, Any]]:
+                result: list[dict[str, Any]] = []
+                activity_values = payload.get(key)
+                if not isinstance(activity_values, list):
+                    return result
+                for item in activity_values:
+                    if not isinstance(item, list) or len(item) != 2:
+                        continue
+                    usage_day = date.fromisoformat(str(item[0])).isoformat()
+                    result.append(
+                        {
+                            "date": usage_day,
+                            "tokens": max(0, int(item[1])),
+                            "cost_cny": 0,
+                        }
+                    )
+                return result
+
+            daily_usage = parsed_activity("activity")
+            weekly_usage = parsed_activity("weekly_activity")
+            if snapshot_version < 3:
+                official_statistics = bool(statistics) and all(
+                    metric.detail == "来自 Codex 账号统计"
+                    for metric in statistics
+                )
+                if official_statistics:
+                    # 旧缓存只有统计项的 detail 能证明接口来源。热力图删除
+                    # 当天这个历史上可能被估算合并的位置；近 7 天仍可保留
+                    # 当前自然日的独立值，不让它进入官方活动序列。
+                    today_key = date.today().isoformat()
+                    legacy_weekly = weekly_usage or list(daily_usage)
+                    daily_usage = [
+                        item for item in daily_usage if item["date"] != today_key
+                    ]
+                    weekly_by_date = {
+                        str(item["date"]): dict(item) for item in daily_usage
+                    }
+                    for item in legacy_weekly:
+                        if item["date"] == today_key:
+                            weekly_by_date[today_key] = dict(item)
+                    weekly_usage = [
+                        weekly_by_date[usage_day]
+                        for usage_day in sorted(weekly_by_date)
+                    ]
+                else:
+                    # 本机估算或来源不明的旧快照不能冒充官方缓存。
+                    statistics = []
+                    daily_usage = []
+                    weekly_usage = []
+            active_until = parsed_datetime(payload.get("account_plan_active_until"))
+        except (TypeError, ValueError):
+            config_manager.logger().warning(
+                "Skipped invalid persisted quota snapshot: provider=%s", provider.id
+            )
+            return None
+
+        currency = str(
+            payload.get("currency")
+            or getattr(provider, "default_currency", "CNY")
+            or "CNY"
+        ).upper()
+        plan = str(payload.get("account_plan") or "")
+        per = PerProviderData(
+            provider.id,
+            provider.name,
+            currency=currency,
+            quota_windows=windows,
+            quota_metrics=metrics,
+            quota_statistics=statistics,
+            account_plan=plan,
+            account_plan_active_until=active_until,
+            quota_source="cache",
+            activity_source="cache" if daily_usage else "",
+            weekly_activity_source="cache" if weekly_usage else "",
+            statistics_source="cache" if statistics else "",
+            status="ok",
+            is_stale=True,
+        )
+        return cls(
+            currency=currency,
+            per_provider=[per],
+            quota_windows=list(windows),
+            quota_metrics=list(metrics),
+            quota_statistics=list(statistics),
+            account_plan=plan,
+            account_plan_active_until=active_until,
+            quota_source="cache",
+            activity_source="cache" if daily_usage else "",
+            weekly_activity_source="cache" if weekly_usage else "",
+            statistics_source="cache" if statistics else "",
+            status="ok",
+            last_success_at=saved_at,
+            is_stale=True,
+            last_updated=saved_at.strftime("%H:%M:%S"),
+            daily_usage=daily_usage,
+            weekly_usage=weekly_usage,
+        )
+
+    @classmethod
+    def _save_persisted_quota_snapshot(cls, provider, data: "TokenData") -> None:
+        account_key = cls._snapshot_identity(provider)
+        if not account_key or not data.per_provider or data.last_success_at is None:
+            return
+        per = data.per_provider[0]
+
+        def metric_payload(metric: QuotaMetric) -> dict[str, str]:
+            return {
+                "title": metric.title,
+                "value": metric.value,
+                "detail": metric.detail,
+            }
+
+        payload: dict[str, Any] = {
+            "version": 3,
+            "currency": per.currency,
+            "windows": [
+                {
+                    "id": window.id,
+                    "title": window.title,
+                    "used_percent": window.used_percent,
+                    "resets_at": (
+                        window.resets_at.isoformat() if window.resets_at else None
+                    ),
+                    "window_minutes": window.window_minutes,
+                    "detail": window.detail,
+                }
+                for window in per.quota_windows
+            ],
+            "metrics": [metric_payload(metric) for metric in per.quota_metrics],
+            "statistics": [
+                metric_payload(metric) for metric in per.quota_statistics
+            ],
+            "activity": [
+                [str(item.get("date") or ""), int(item.get("tokens") or 0)]
+                for item in data.daily_usage
+                if item.get("date")
+            ],
+            "weekly_activity": [
+                [str(item.get("date") or ""), int(item.get("tokens") or 0)]
+                for item in data.weekly_usage
+                if item.get("date")
+            ],
+            "account_plan": per.account_plan,
+            "account_plan_active_until": (
+                per.account_plan_active_until.isoformat()
+                if per.account_plan_active_until
+                else None
+            ),
+        }
+        history.save_provider_quota_snapshot(
+            provider.id, account_key, payload, data.last_success_at
+        )
+
+    @classmethod
     def fetch(
         cls,
         today: date | None = None,
@@ -465,6 +730,19 @@ class TokenData:
         observed_at = provider_observed_at(provider.id, datetime.now().astimezone())
         current_day = today or observed_at.date()
         cached = cls._base_snapshot(provider.id)
+        if (
+            not cached.per_provider
+            and getattr(provider, "supports_subscription_quota", False)
+        ):
+            try:
+                persisted = cls._load_persisted_quota_snapshot(provider)
+            except Exception:
+                config_manager.logger().exception(
+                    "Persisted quota snapshot read failed for %s", provider.id
+                )
+            else:
+                if persisted is not None:
+                    cached = persisted
         data = cached
         data.status = "loading"
         data.errors = []
@@ -484,12 +762,17 @@ class TokenData:
         per.account_label = ""
         per.account_plan = ""
         per.account_plan_active_until = None
+        per.quota_source = ""
+        per.activity_source = ""
+        per.weekly_activity_source = ""
+        per.statistics_source = ""
         per.errors = []
         per.status = "loading"
         per.is_stale = False
         successes = 0
         kept_cached_quota = False
         quota_refresh_failed = False
+        quota_refresh_succeeded = False
         minute_rows: list[dict[str, Any]] = []
         minute_cost_rows: list[dict[str, Any]] = []
         minute_status = "unavailable"
@@ -534,6 +817,7 @@ class TokenData:
             )
             per.errors.append(FetchError("NOT_CONFIGURED", provider.name, f"尚未配置 {provider.name} 凭据"))
             data.daily_usage = []
+            data.weekly_usage = []
             data.last_success_at = None
             data.last_updated = ""
         else:
@@ -548,25 +832,40 @@ class TokenData:
                 quota_error
                 and getattr(provider, "supports_subscription_quota", False)
             )
+            quota_refresh_succeeded = bool(
+                quota is not None
+                and quota_error is None
+                and getattr(provider, "supports_subscription_quota", False)
+            )
             kept_cached_quota = bool(
                 quota_error
-                and quota_error.code in {"NETWORK_ERROR", "NETWORK_TIMEOUT"}
+                and quota_error.code in _TRANSIENT_QUOTA_ERROR_CODES
                 and previous_per
                 and (
                     previous_per.quota_windows
                     or previous_per.quota_metrics
+                    or previous_per.quota_statistics
                     or previous_per.account_plan
                     or previous_per.account_plan_active_until
+                    or data.daily_usage
+                    or data.weekly_usage
                 )
             )
             if kept_cached_quota and previous_per is not None:
-                # Codex 的远程额度失败时仍会返回最新本地活动。保留上次成功
-                # 的远程额度，避免瞬时网络波动把卡片清空。
+                # 暂时性远程失败必须保留整份最后成功快照，避免额度、统计和
+                # 活动图分别回退到不同时间点的数据。
                 per.quota_windows = copy.deepcopy(previous_per.quota_windows)
                 per.quota_metrics = copy.deepcopy(previous_per.quota_metrics)
+                per.quota_statistics = copy.deepcopy(previous_per.quota_statistics)
                 per.account_label = previous_per.account_label
                 per.account_plan = previous_per.account_plan
                 per.account_plan_active_until = previous_per.account_plan_active_until
+                per.quota_source = "cache"
+                per.activity_source = "cache" if data.daily_usage else ""
+                per.weekly_activity_source = "cache" if data.weekly_usage else ""
+                per.statistics_source = (
+                    "cache" if previous_per.quota_statistics else ""
+                )
             if quota is not None:
                 if not kept_cached_quota:
                     per.quota_windows = list(quota.windows)
@@ -574,11 +873,68 @@ class TokenData:
                     per.account_label = quota.account_label
                     per.account_plan = quota.plan
                     per.account_plan_active_until = quota.account_plan_active_until
-                per.quota_statistics = list(quota.statistics)
-                data.daily_usage = [
-                    {"date": usage_day, "tokens": tokens, "cost_cny": 0}
-                    for usage_day, tokens in quota.activity
-                ]
+                    per.quota_source = "interface" if quota_error is None else ""
+
+                    if quota.activity_source or quota.activity:
+                        data.daily_usage = [
+                            {"date": usage_day, "tokens": tokens, "cost_cny": 0}
+                            for usage_day, tokens in quota.activity
+                        ]
+                        per.activity_source = quota.activity_source or "interface"
+                    elif data.daily_usage:
+                        # 额度接口与账号统计接口相互独立；后者失败不能清空
+                        # 跨重启恢复出的最后一份官方热力图。
+                        per.activity_source = "cache"
+                    else:
+                        data.daily_usage = []
+                        per.activity_source = ""
+
+                    if quota.statistics_source or quota.statistics:
+                        per.quota_statistics = list(quota.statistics)
+                        per.statistics_source = (
+                            quota.statistics_source or "interface"
+                        )
+                    elif previous_per and previous_per.quota_statistics:
+                        per.quota_statistics = copy.deepcopy(
+                            previous_per.quota_statistics
+                        )
+                        per.statistics_source = "cache"
+                    else:
+                        per.quota_statistics = []
+                        per.statistics_source = ""
+
+                    weekly_activity = quota.weekly_activity or quota.activity
+                    weekly_usage = [
+                        {"date": usage_day, "tokens": tokens, "cost_cny": 0}
+                        for usage_day, tokens in weekly_activity
+                    ]
+                    if quota.weekly_activity_source == "local" and data.weekly_usage:
+                        # 统计接口刚好离线时保留缓存历史，只覆盖本机明确提供的
+                        # 当天估算；这样不会用本机日志重算任何历史日期。
+                        merged_weekly = {
+                            str(item.get("date") or ""): dict(item)
+                            for item in data.weekly_usage
+                            if item.get("date")
+                        }
+                        for item in weekly_usage:
+                            merged_weekly[str(item["date"])] = item
+                        data.weekly_usage = [
+                            merged_weekly[usage_day]
+                            for usage_day in sorted(merged_weekly)
+                        ]
+                        per.weekly_activity_source = "cache_mixed"
+                    elif quota.weekly_activity_source or weekly_activity:
+                        data.weekly_usage = weekly_usage
+                        per.weekly_activity_source = (
+                            quota.weekly_activity_source
+                            or per.activity_source
+                            or "interface"
+                        )
+                    elif data.weekly_usage:
+                        per.weekly_activity_source = "cache"
+                    else:
+                        data.weekly_usage = []
+                        per.weekly_activity_source = ""
                 successes += 1
             elif kept_cached_quota:
                 # 没有本地活动时也继续展示上一份完整额度。
@@ -770,7 +1126,7 @@ class TokenData:
 
             if successes:
                 per.status = "partial" if per.errors else "ok"
-                per.is_stale = bool(per.errors)
+                per.is_stale = bool(per.errors) or kept_cached_quota
             else:
                 per.status = "error"
                 per.is_stale = previous_per is not None
@@ -794,6 +1150,10 @@ class TokenData:
         data.account_label = per.account_label
         data.account_plan = per.account_plan
         data.account_plan_active_until = per.account_plan_active_until
+        data.quota_source = per.quota_source
+        data.activity_source = per.activity_source
+        data.weekly_activity_source = per.weekly_activity_source
+        data.statistics_source = per.statistics_source
         data.errors = list(per.errors)
         data.minute_usage = minute_rows
         data.minute_usage_status = minute_status
@@ -808,9 +1168,17 @@ class TokenData:
                 data.last_success_at = datetime.now()
                 data.last_updated = data.last_success_at.strftime("%H:%M:%S")
             data.status = "partial" if per.errors else "ok"
-            data.is_stale = bool(per.errors)
+            data.is_stale = per.is_stale
             with cls._cache_lock:
                 cls._provider_snapshots[provider.id] = copy.deepcopy(data)
+            if quota_refresh_succeeded:
+                try:
+                    cls._save_persisted_quota_snapshot(provider, data)
+                except Exception:
+                    # 缓存落盘失败不能把一次成功的远程刷新降级为界面错误。
+                    config_manager.logger().exception(
+                        "Persisted quota snapshot write failed for %s", provider.id
+                    )
         else:
             data.status = "error" if per.status != "not_configured" else "not_configured"
             data.is_stale = per.is_stale

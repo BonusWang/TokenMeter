@@ -49,6 +49,7 @@ from ui.qt_panel import (
     MinuteUsageChart,
     StatisticsCard,
     TrendCard,
+    format_codex_tokens,
     format_money,
     format_money_axis,
     format_reset_countdown,
@@ -106,6 +107,8 @@ def test_token_axis_uses_readable_units():
     assert format_token_axis(0) == "0万"
     assert format_token_axis(1_500) == "0.15万"
     assert format_token_axis(60_000_000) == "6000万"
+    assert format_codex_tokens(2_607_632_527) == "26.1亿"
+    assert format_codex_tokens(202_936_827) == "2亿"
 
 
 def test_panel_token_values_use_readable_units():
@@ -198,7 +201,7 @@ def test_panel_quick_switches_provider_and_renders_subscription_quota():
     ]
     data.quota_metrics = [QuotaMetric("可用 Credits", "12.5")]
     data.quota_statistics = [
-        QuotaMetric("累计 Token 数", "21.7亿"),
+        QuotaMetric("累计 Token 数", "21.7亿", "来自 Codex 账号统计"),
         QuotaMetric("峰值 Token 数", "1.1亿"),
         QuotaMetric("最长任务时长", "52分 35秒"),
         QuotaMetric("当前连续天数", "0 天"),
@@ -206,6 +209,12 @@ def test_panel_quick_switches_provider_and_renders_subscription_quota():
     ]
     data.account_plan = "pro"
     data.account_label = "a@example.com"
+    data.weekly_usage = [dict(row) for row in data.daily_usage]
+    data.weekly_usage[0]["tokens"] = 99_000_000
+    data.quota_source = "interface"
+    data.weekly_activity_source = "mixed"
+    data.activity_source = "interface"
+    data.statistics_source = "interface"
     data.per_provider = [
         PerProviderData(
             "codex",
@@ -254,10 +263,18 @@ def test_panel_quick_switches_provider_and_renders_subscription_quota():
     assert panel.month_card.detail.isHidden()
     assert not panel.trend.isHidden()
     assert panel.trend.title.text() == "近 7 天 Token 使用量"
+    assert panel.trend._values[-1] == 99_000_000
+    today_activity = next(day for day in panel.activity.days if day.date == date.today())
+    assert today_activity.token_count == 10_000_000
     assert "Token：" in panel.trend.tooltip_text(0)
     assert "金额" not in panel.trend.tooltip_text(0)
     assert not panel.activity_card.isHidden()
     assert panel.activity_mode_segment.isHidden()
+    assert panel.trend.title.toolTip().endswith("当天 Token 为本机会话日志估算")
+    assert panel.activity_summary.toolTip() == "来自 Codex 账号统计，不含本机估算"
+    assert panel.status_text.text() == (
+        "额度/热力图/底部统计：接口数据 · 近 7 天：接口 + 今日本机估算"
+    )
     assert [label.text() for label in panel.statistics._values] == [
         "21.7亿",
         "1.1亿",
@@ -272,6 +289,53 @@ def test_panel_quick_switches_provider_and_renders_subscription_quota():
 
     assert selected_providers == ["mimo"]
     panel.close()
+
+
+def test_codex_cached_panel_does_not_claim_background_refresh_is_data_update():
+    panel = MainPanel()
+    data = sample_data()
+    data.per_provider = [PerProviderData("codex", "Codex")]
+    data.quota_windows = [QuotaWindow("codex-weekly", "每周额度", 25)]
+    data.quota_source = "cache"
+    data.weekly_activity_source = "cache"
+    data.activity_source = "cache"
+    data.statistics_source = "cache"
+
+    panel.update_data(data, refreshing=True)
+
+    assert "正在更新" not in panel.status_text.text()
+    assert panel.status_text.text() == "额度/近 7 天/热力图/底部统计：缓存数据"
+    assert panel.updated_text.text().startswith("缓存保存于")
+    panel.close()
+
+
+def test_codex_source_summary_marks_cached_data():
+    data = TokenData(
+        quota_source="interface",
+        weekly_activity_source="cache",
+        activity_source="cache",
+        statistics_source="cache",
+    )
+
+    assert MainPanel.codex_source_summary(data) == (
+        "额度：接口数据 · 近 7 天/热力图/底部统计：缓存数据"
+    )
+    assert MainPanel.codex_source_summary(data, loading=True).startswith(
+        "正在更新 · 当前显示"
+    )
+
+    unavailable = TokenData(
+        status="ok",
+        quota_source="interface",
+        weekly_activity_source="local",
+    )
+    assert MainPanel.codex_source_summary(unavailable) == (
+        "额度：接口数据 · 近 7 天：今日本机估算 · 热力图/底部统计：暂无数据"
+    )
+    unavailable.weekly_activity_source = "cache_mixed"
+    assert "近 7 天：缓存 + 今日本机估算" in MainPanel.codex_source_summary(
+        unavailable
+    )
 
 
 def test_subscription_expiry_replaces_codex_placeholder_without_email():

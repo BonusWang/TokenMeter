@@ -96,6 +96,15 @@ def format_token_axis(value: float) -> str:
     return compact_tokens(int(round(value)))
 
 
+def format_codex_tokens(value: int | float) -> str:
+    amount = int(round(value))
+    denominator, suffix = (
+        (100_000_000, "亿") if abs(amount) >= 100_000_000 else (10_000, "万")
+    )
+    text = f"{amount / denominator:.1f}".rstrip("0").rstrip(".")
+    return f"{text or '0'}{suffix}"
+
+
 def format_money_axis(value: float, currency: str = "CNY") -> str:
     absolute = abs(value)
     if absolute >= 100:
@@ -145,7 +154,7 @@ class MoneyAxis(pg.AxisItem):
 
     def tickStrings(self, values, scale, spacing):
         if self.token_mode:
-            return [format_token_axis(value * scale) for value in values]
+            return [format_codex_tokens(value * scale) for value in values]
         return [format_money_axis(value * scale, self.currency) for value in values]
 
 
@@ -1039,7 +1048,7 @@ class TrendCard(QFrame):
         if self._token_mode:
             return (
                 f"{self._dates[index].isoformat()}\n"
-                f"Token：{compact_tokens(int(self._values[index]))}"
+                f"Token：{format_codex_tokens(self._values[index])}"
             )
         return (
             f"{self._dates[index].isoformat()}\n"
@@ -1988,9 +1997,14 @@ class StatisticsCard(QFrame):
     def set_quota_data(self, data: TokenData) -> None:
         self.title.setText("Codex 使用统计")
         items = [(metric.title, metric.value, metric.detail) for metric in data.quota_statistics]
+        source_tooltip = {
+            "interface": "来自 Codex 账号统计",
+            "cache": "当前显示最近一次缓存的 Codex 账号统计",
+        }.get(data.statistics_source, "")
         for index, (name, value) in enumerate(zip(self._names, self._values)):
             if index < len(items):
                 title, text, tooltip = items[index]
+                tooltip = source_tooltip or tooltip
                 name.setText(title)
                 name.setToolTip(tooltip)
                 value.setText(text if len(text) <= 22 else f"{text[:21]}…")
@@ -2717,14 +2731,22 @@ class MainPanel(QFrame):
         self.activity.set_activity(data.daily_usage)
         source_days = [day for day in self.activity.days if day.has_source_data]
         total = sum(day.token_count for day in source_days)
+        provider_id = (
+            data.per_provider[0].provider_id if data.per_provider else ""
+        )
+        formatted_total = (
+            format_codex_tokens(total)
+            if provider_id == "codex"
+            else compact_tokens(total)
+        )
         if not source_days:
             summary = "暂无 Token 活动"
         else:
             first = min(day.date for day in source_days)
             summary = (
-                f"数据始于 {first.isoformat()} · 共 {compact_tokens(total)}"
+                f"数据始于 {first.isoformat()} · 共 {formatted_total}"
                 if first > self.activity.period.start
-                else f"过去 12 个月共使用 {compact_tokens(total)}"
+                else f"过去 12 个月共使用 {formatted_total}"
             )
         self._annual_activity_summary = summary
         self.activity_summary.setText(summary)
@@ -2803,8 +2825,21 @@ class MainPanel(QFrame):
                 card.set_values(value, detail, "")
                 card.value.setToolTip(detail)
                 card.detail.setVisible(bool(detail))
-            # Codex 没有账单金额口径；顶部右侧只展示本机近七天 Token 活动。
-            self.trend.set_rows(data.daily_usage, currency=self._currency, token_mode=True)
+            # 近 7 天拥有独立序列：只在这里合并本机当天估算，不能传给官方热力图。
+            self.trend.set_rows(
+                data.weekly_usage or data.daily_usage,
+                currency=self._currency,
+                token_mode=True,
+            )
+            weekly_tooltip = {
+                "interface": "来自 Codex 账号统计",
+                "mixed": "历史数据来自 Codex 账号统计；当天 Token 为本机会话日志估算",
+                "cache": "当前显示最近一次缓存的近 7 天数据",
+                "cache_mixed": "历史数据来自缓存；当天 Token 为本机会话日志估算",
+                "local": "接口统计暂不可用；仅当天 Token 来自本机会话日志估算",
+            }.get(data.weekly_activity_source, "")
+            self.trend.title.setToolTip(weekly_tooltip)
+            self.trend.plot.setToolTip(weekly_tooltip)
             self._activity_view = "annual"
             self.activity_stack.setCurrentIndex(0)
             self.annual_activity_button.setChecked(True)
@@ -2813,16 +2848,24 @@ class MainPanel(QFrame):
             for button in self.minute_legend_buttons.values():
                 button.hide()
             self.minute_estimate_label.hide()
-            self.activity_summary.setToolTip("根据本机 Codex 会话记录汇总，不上传会话内容")
+            activity_tooltip = {
+                "interface": "来自 Codex 账号统计，不含本机估算",
+                "cache": "当前显示最近一次缓存的官方 Token 活动",
+            }.get(data.activity_source, "暂无可用的官方 Token 活动")
+            self.activity_summary.setToolTip(activity_tooltip)
             self.activity_card.setFixedHeight(ANNUAL_ACTIVITY_SECTION_HEIGHT)
             self._set_annual_activity_data(data)
             self.statistics.set_quota_data(data)
             self.setFixedHeight(ANNUAL_PANEL_HEIGHT)
             self.activity_height_changed.emit(ANNUAL_PANEL_HEIGHT)
-            status, _color = self.status_summary(data, loading or refreshing)
+            # 已有缓存时后台刷新不应让状态栏长期停在“正在更新”；只有
+            # 首次加载无可展示数据时才使用加载态。
+            status = self.codex_source_summary(data, loading)
+            if not status:
+                status, _color = self.status_summary(data, loading or refreshing)
             self.status_text.setText(status)
-            self.status_dot.set_role(self.status_role(data, loading or refreshing))
-            self.updated_text.setText(self.relative_update_time(data))
+            self.status_dot.set_role(self.status_role(data, loading))
+            self.updated_text.setText(self.codex_update_time(data))
             return
 
         # API billing providers retain the original amount, trend and Token activity view.
@@ -2877,9 +2920,58 @@ class MainPanel(QFrame):
             return "warning"
         if data.status == "error":
             return "danger"
+        is_codex = bool(
+            data.per_provider and data.per_provider[0].provider_id == "codex"
+        )
+        if is_codex and data.quota_source and not all(
+            (
+                data.weekly_activity_source,
+                data.activity_source,
+                data.statistics_source,
+            )
+        ):
+            return "warning"
+        sources = (
+            data.quota_source,
+            data.weekly_activity_source,
+            data.activity_source,
+            data.statistics_source,
+        )
+        if data.is_stale or any(source.startswith("cache") for source in sources):
+            return "warning"
         if data.status == "ok":
             return "success"
         return "accent"
+
+    @staticmethod
+    def codex_source_summary(data: TokenData, loading: bool = False) -> str:
+        if data.errors or data.status in {"not_configured", "partial", "error"}:
+            return ""
+        entries = (
+            ("额度", data.quota_source),
+            ("近 7 天", data.weekly_activity_source),
+            ("热力图", data.activity_source),
+            ("底部统计", data.statistics_source),
+        )
+        labels_by_source: dict[str, list[str]] = {}
+        for label, source in entries:
+            labels_by_source.setdefault(source or "unavailable", []).append(label)
+        source_names = {
+            "interface": "接口数据",
+            "cache": "缓存数据",
+            "mixed": "接口 + 今日本机估算",
+            "cache_mixed": "缓存 + 今日本机估算",
+            "local": "今日本机估算",
+            "unavailable": "暂无数据",
+        }
+        parts = [
+            f"{'/'.join(labels)}：{source_names.get(source, source)}"
+            for source, labels in labels_by_source.items()
+        ]
+        if not parts:
+            return ""
+        summary = " · ".join(parts)
+        return f"正在更新 · 当前显示 {summary}" if loading else summary
 
     @staticmethod
     def status_summary(data: TokenData, loading: bool = False) -> tuple[str, str]:
@@ -2922,3 +3014,22 @@ class MainPanel(QFrame):
         if minutes < 60:
             return f"数据更新于 {minutes} 分钟前"
         return f"数据更新于 {minutes // 60} 小时前"
+
+    @staticmethod
+    def codex_update_time(data: TokenData) -> str:
+        text = MainPanel.relative_update_time(data)
+        if text == "等待首次更新":
+            return text
+        sources = {
+            data.quota_source,
+            data.weekly_activity_source,
+            data.activity_source,
+            data.statistics_source,
+        }
+        if sources <= {"", "cache", "cache_mixed"}:
+            return text.replace("数据更新于", "缓存保存于", 1)
+        if data.quota_source == "interface" and any(
+            source.startswith("cache") for source in sources
+        ):
+            return text.replace("数据更新于", "额度更新于", 1)
+        return text

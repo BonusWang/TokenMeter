@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,6 +19,7 @@ from api.providers.base import (
     QuotaMetric,
     QuotaWindow,
 )
+from data import history
 from data.store import (
     PerProviderData,
     TokenData,
@@ -233,6 +235,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(data.quota_metrics[0].value, "12")
         self.assertEqual(data.quota_statistics[0].value, "0.12万")
         self.assertEqual(data.daily_usage[0]["tokens"], 1234)
+        self.assertEqual(data.weekly_usage[0]["tokens"], 1234)
         self.assertEqual(data.account_label, "a@example.com")
         self.assertEqual(data.account_plan, "pro")
 
@@ -287,7 +290,7 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(data.status, "ok")
         self.assertEqual(data.errors, [])
-        self.assertFalse(data.is_stale)
+        self.assertTrue(data.is_stale)
         self.assertEqual(data.quota_windows[0].used_percent, 25)
         self.assertEqual(data.quota_metrics[0].value, "12")
         self.assertEqual(data.account_label, "a@example.com")
@@ -296,10 +299,264 @@ class StoreTests(unittest.TestCase):
             data.account_plan_active_until,
             datetime(2026, 8, 11, 6, 17, tzinfo=timezone.utc),
         )
-        self.assertEqual(data.quota_statistics[0].value, "0.23万")
-        self.assertEqual(data.daily_usage[0]["tokens"], 2345)
+        self.assertEqual(data.quota_statistics[0].value, "0.12万")
+        self.assertEqual(data.daily_usage[0]["tokens"], 1234)
+        self.assertEqual(data.weekly_usage[0]["tokens"], 1234)
+        self.assertEqual(data.quota_source, "cache")
+        self.assertEqual(data.activity_source, "cache")
+        self.assertEqual(data.weekly_activity_source, "cache")
+        self.assertEqual(data.statistics_source, "cache")
         self.assertEqual(data.last_success_at, remote_success_at)
         self.assertEqual(data.last_updated, "10:30:00")
+
+    def test_codex_transient_remote_errors_keep_the_complete_cached_snapshot(self):
+        class QuotaProvider(FakeProvider):
+            id = "codex"
+            name = "Codex"
+            supports_daily_usage = False
+            supports_cost = False
+            supports_subscription_quota = True
+
+            def fetch_balance(self):
+                return None, None
+
+            def fetch_summary(self):
+                return None, None
+
+        class SuccessfulQuotaProvider(QuotaProvider):
+            def fetch_quota(self):
+                return ProviderQuota(
+                    windows=(QuotaWindow("codex-weekly", "每周额度", 25),),
+                    activity=(("2026-07-03", 1234),),
+                    weekly_activity=(("2026-07-03", 5678),),
+                    statistics=(QuotaMetric("累计 Token 数", "0.12万"),),
+                    plan="pro",
+                ), None
+
+        for error_code in (
+            "INVALID_RESPONSE",
+            "RATE_LIMITED",
+            "SERVER_ERROR",
+            "UNKNOWN_ERROR",
+        ):
+            with self.subTest(error_code=error_code):
+                TokenData._provider_snapshots = {}
+                self.fetch_with(SuccessfulQuotaProvider())
+
+                class FailedQuotaProvider(QuotaProvider):
+                    def fetch_quota(self):
+                        return None, FetchError(error_code, "Codex 订阅额度", "暂时不可用")
+
+                data = self.fetch_with(FailedQuotaProvider())
+
+                self.assertEqual(data.quota_windows[0].used_percent, 25)
+                self.assertEqual(data.quota_statistics[0].value, "0.12万")
+                self.assertEqual(data.daily_usage[0]["tokens"], 1234)
+                self.assertEqual(data.weekly_usage[0]["tokens"], 5678)
+                self.assertEqual(data.account_plan, "pro")
+                self.assertEqual(data.errors, [])
+
+    def test_codex_stats_failure_keeps_official_cache_and_merges_only_today(self):
+        class QuotaProvider(FakeProvider):
+            id = "codex"
+            name = "Codex"
+            supports_daily_usage = False
+            supports_cost = False
+            supports_subscription_quota = True
+
+            def fetch_balance(self):
+                return None, None
+
+            def fetch_summary(self):
+                return None, None
+
+        class SuccessfulQuotaProvider(QuotaProvider):
+            def fetch_quota(self):
+                return ProviderQuota(
+                    windows=(QuotaWindow("codex-weekly", "每周额度", 25),),
+                    activity=(("2026-07-02", 1234),),
+                    weekly_activity=(("2026-07-02", 1234),),
+                    statistics=(QuotaMetric("累计 Token 数", "0.12万"),),
+                    activity_source="interface",
+                    weekly_activity_source="interface",
+                    statistics_source="interface",
+                ), None
+
+        class StatsUnavailableProvider(QuotaProvider):
+            def fetch_quota(self):
+                return ProviderQuota(
+                    windows=(QuotaWindow("codex-weekly", "每周额度", 30),),
+                    weekly_activity=(("2026-07-03", 5678),),
+                    weekly_activity_source="local",
+                ), None
+
+        self.fetch_with(SuccessfulQuotaProvider())
+        data = self.fetch_with(StatsUnavailableProvider())
+
+        self.assertEqual(data.quota_windows[0].used_percent, 30)
+        self.assertEqual(data.daily_usage[0]["tokens"], 1234)
+        self.assertEqual(data.quota_statistics[0].value, "0.12万")
+        self.assertEqual(
+            {item["date"]: item["tokens"] for item in data.weekly_usage},
+            {"2026-07-02": 1234, "2026-07-03": 5678},
+        )
+        self.assertEqual(data.quota_source, "interface")
+        self.assertEqual(data.activity_source, "cache")
+        self.assertEqual(data.statistics_source, "cache")
+        self.assertEqual(data.weekly_activity_source, "cache_mixed")
+
+    def test_codex_offline_restart_restores_only_the_same_account_snapshot(self):
+        class QuotaProvider(FakeProvider):
+            id = "codex"
+            name = "Codex"
+            supports_daily_usage = False
+            supports_cost = False
+            supports_subscription_quota = True
+
+            def __init__(self, account_key: str):
+                super().__init__()
+                self.account_key = account_key
+
+            def snapshot_identity(self):
+                return self.account_key
+
+            def fetch_balance(self):
+                return None, None
+
+            def fetch_summary(self):
+                return None, None
+
+        class SuccessfulQuotaProvider(QuotaProvider):
+            def fetch_quota(self):
+                return ProviderQuota(
+                    windows=(QuotaWindow("codex-weekly", "每周额度", 25),),
+                    activity=(("2026-07-03", 1234),),
+                    weekly_activity=(("2026-07-03", 5678),),
+                    statistics=(QuotaMetric("累计 Token 数", "0.12万"),),
+                    plan="pro",
+                ), None
+
+        class FailedQuotaProvider(QuotaProvider):
+            def fetch_quota(self):
+                return None, FetchError(
+                    "NETWORK_ERROR", "Codex 订阅额度", "无法连接 Codex 额度服务"
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "usage.db"
+            with patch.object(history, "DB_PATH", db_path):
+                successful = self.fetch_with(SuccessfulQuotaProvider("same-account"))
+                TokenData._provider_snapshots = {}
+
+                with patch(
+                    "data.store.active_providers",
+                    return_value=iter([QuotaProvider("same-account")]),
+                ):
+                    preloaded = TokenData.persisted_snapshot(
+                        {"ACTIVE_PROVIDER": "codex"}
+                    )
+                self.assertEqual(preloaded.quota_windows[0].used_percent, 25)
+                self.assertEqual(preloaded.daily_usage[0]["tokens"], 1234)
+                self.assertEqual(preloaded.weekly_usage[0]["tokens"], 5678)
+                self.assertEqual(preloaded.weekly_activity_source, "cache")
+                TokenData._provider_snapshots = {}
+
+                restored = self.fetch_with(FailedQuotaProvider("same-account"))
+                self.assertEqual(restored.quota_windows[0].used_percent, 25)
+                self.assertEqual(restored.quota_statistics[0].value, "0.12万")
+                self.assertEqual(restored.daily_usage[0]["tokens"], 1234)
+                self.assertEqual(restored.weekly_usage[0]["tokens"], 5678)
+                self.assertEqual(restored.account_plan, "pro")
+                self.assertEqual(restored.last_success_at, successful.last_success_at)
+                self.assertEqual(restored.errors, [])
+
+                TokenData._provider_snapshots = {}
+                different_account = self.fetch_with(
+                    FailedQuotaProvider("different-account")
+                )
+
+        self.assertEqual(different_account.quota_windows, [])
+        self.assertEqual(
+            [error.code for error in different_account.errors], ["NETWORK_ERROR"]
+        )
+
+    def test_legacy_codex_snapshot_does_not_restore_unverified_statistics(self):
+        class QuotaProvider(FakeProvider):
+            id = "codex"
+            name = "Codex"
+            supports_subscription_quota = True
+
+            def snapshot_identity(self):
+                return "same-account"
+
+        payload = {
+            "version": 2,
+            "windows": [
+                {
+                    "id": "codex-weekly",
+                    "title": "每周额度",
+                    "used_percent": 25,
+                }
+            ],
+            "statistics": [
+                {"title": "累计 Token 数", "value": "错误估算", "detail": "本机估算"}
+            ],
+            "activity": [["2026-07-02", 9999]],
+            "weekly_activity": [["2026-07-02", 9999]],
+        }
+        with patch.object(
+            history,
+            "load_provider_quota_snapshot",
+            return_value=(payload, datetime(2026, 7, 3, 10, 30)),
+        ):
+            restored = TokenData._load_persisted_quota_snapshot(QuotaProvider())
+
+        self.assertEqual(restored.quota_windows[0].used_percent, 25)
+        self.assertEqual(restored.quota_statistics, [])
+        self.assertEqual(restored.daily_usage, [])
+        self.assertEqual(restored.weekly_usage, [])
+
+    def test_legacy_codex_snapshot_restores_verified_interface_cache(self):
+        class QuotaProvider(FakeProvider):
+            id = "codex"
+            name = "Codex"
+            supports_subscription_quota = True
+
+            def snapshot_identity(self):
+                return "same-account"
+
+        today = date.today().isoformat()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        payload = {
+            "version": 2,
+            "statistics": [
+                {
+                    "title": "累计 Token 数",
+                    "value": "26.1亿",
+                    "detail": "来自 Codex 账号统计",
+                }
+            ],
+            "activity": [[yesterday, 1000], [today, 2000]],
+            "weekly_activity": [[yesterday, 1000], [today, 3000]],
+        }
+        with patch.object(
+            history,
+            "load_provider_quota_snapshot",
+            return_value=(payload, datetime.now()),
+        ):
+            restored = TokenData._load_persisted_quota_snapshot(QuotaProvider())
+
+        self.assertEqual(restored.quota_statistics[0].value, "26.1亿")
+        self.assertEqual(
+            {item["date"]: item["tokens"] for item in restored.daily_usage},
+            {yesterday: 1000},
+        )
+        self.assertEqual(
+            {item["date"]: item["tokens"] for item in restored.weekly_usage},
+            {yesterday: 1000, today: 3000},
+        )
+        self.assertEqual(restored.activity_source, "cache")
+        self.assertEqual(restored.statistics_source, "cache")
 
     def test_codex_network_failure_without_cached_quota_keeps_error_visible(self):
         class FailedQuotaProvider(FakeProvider):

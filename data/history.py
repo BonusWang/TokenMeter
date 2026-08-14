@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import closing, contextmanager
@@ -134,6 +135,65 @@ def _connect() -> Iterator[sqlite3.Connection]:
     finally:
         # sqlite Connection 的上下文只处理事务，文件句柄仍需显式关闭。
         connection.close()
+
+
+def _ensure_provider_quota_snapshot_schema(connection: sqlite3.Connection) -> None:
+    # 额度快照是新增的可选缓存，按需建表，避免只读历史查询被一次迁移阻断。
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS provider_quota_snapshot (
+               provider TEXT NOT NULL,
+               account_key TEXT NOT NULL,
+               payload TEXT NOT NULL,
+               saved_at TEXT NOT NULL,
+               PRIMARY KEY (provider, account_key)
+           )"""
+    )
+
+
+def save_provider_quota_snapshot(
+    provider: str,
+    account_key: str,
+    payload: dict[str, Any],
+    saved_at: datetime,
+) -> None:
+    if not provider or not account_key:
+        return
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with _connect() as connection:
+        _ensure_provider_quota_snapshot_schema(connection)
+        connection.execute(
+            """INSERT INTO provider_quota_snapshot(provider, account_key, payload, saved_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(provider, account_key) DO UPDATE SET
+                   payload = excluded.payload,
+                   saved_at = excluded.saved_at""",
+            (provider, account_key, serialized, saved_at.isoformat()),
+        )
+
+
+def load_provider_quota_snapshot(
+    provider: str, account_key: str
+) -> tuple[dict[str, Any], datetime] | None:
+    if not provider or not account_key:
+        return None
+    with _connect() as connection:
+        _ensure_provider_quota_snapshot_schema(connection)
+        row = connection.execute(
+            """SELECT payload, saved_at FROM provider_quota_snapshot
+                 WHERE provider = ? AND account_key = ?""",
+            (provider, account_key),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(str(row[0]))
+        saved_at = datetime.fromisoformat(str(row[1]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        config_manager.logger().warning(
+            "Skipped malformed provider quota snapshot: provider=%s", provider
+        )
+        return None
+    return (payload, saved_at) if isinstance(payload, dict) else None
 
 
 def backup_usage_database(

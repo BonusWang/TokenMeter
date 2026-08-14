@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -24,8 +26,9 @@ from api.providers.base import (
     build_session,
 )
 
-
 _TIMESTAMP = re.compile(r'^\{"timestamp":"([^"]+)"')
+_ActivityRows = tuple[tuple[str, int], ...]
+_ActivityData = tuple[_ActivityRows, _ActivityRows, tuple[QuotaMetric, ...]]
 
 
 @dataclass
@@ -36,7 +39,6 @@ class _SessionUsage:
     task_start: datetime | None = None
     longest_task_seconds: int = 0
     last_total: int = 0
-    last_cached: int = 0
     peak_total: int = 0
     daily: dict[str, int] = field(default_factory=dict)
 
@@ -59,13 +61,22 @@ class CodexProvider(Provider):
     _session_cache_lock: ClassVar[threading.Lock] = threading.Lock()
     _subscription_cache: ClassVar[dict[str, tuple[datetime, datetime]]] = {}
     _subscription_cache_ttl = timedelta(hours=6)
+    _activity_cache: ClassVar[dict[str, tuple[float, _ActivityData]]] = {}
+    _activity_cache_ttl_seconds = 60 * 60
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         super().__init__(config)
         self._session = build_session()
+        # 账号统计与套餐日期属于可选慢数据，禁用自动重试，避免弱网时
+        # 两个辅助请求把已经成功的额度刷新拖住一分钟以上。
+        self._metadata_session = requests.Session()
+        self._activity_data_source = ""
+        self._weekly_activity_data_source = ""
+        self._statistics_data_source = ""
 
     def close(self) -> None:
         self._session.close()
+        self._metadata_session.close()
 
     def _home(self) -> Path:
         configured = str(self.config_get("CODEX_HOME", "")).strip()
@@ -107,6 +118,20 @@ class CodexProvider(Provider):
             return True
         except (OSError, ValueError, json.JSONDecodeError):
             return False
+
+    def snapshot_identity(self) -> str:
+        try:
+            access_token, account_id, claims = self._credentials()
+        except (OSError, ValueError, json.JSONDecodeError):
+            return ""
+        identity = (
+            account_id
+            or str(claims.get("sub") or "").strip()
+            or str(claims.get("email") or "").strip().lower()
+            or f"token:{access_token}"
+        )
+        # SQLite 只保存不可逆指纹，避免把账号 ID、邮箱或访问令牌写入缓存。
+        return hashlib.sha256(f"codex:{identity}".encode()).hexdigest()
 
     @staticmethod
     def _window_title(seconds: int, label: str = "") -> str:
@@ -167,7 +192,6 @@ class CodexProvider(Provider):
                 task_start=previous.task_start,
                 longest_task_seconds=previous.longest_task_seconds,
                 last_total=previous.last_total,
-                last_cached=previous.last_cached,
                 peak_total=previous.peak_total,
                 daily=dict(previous.daily),
             )
@@ -228,22 +252,16 @@ class CodexProvider(Provider):
                         total_usage = (
                             info.get("total_token_usage") if isinstance(info, dict) else None
                         )
+                        if not isinstance(total_usage, dict):
+                            continue
                         total = int(total_usage.get("total_tokens") or 0)
-                        cached = int(total_usage.get("cached_input_tokens") or 0)
                     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
                         continue
                     delta_total = total - usage.last_total if total >= usage.last_total else total
-                    delta_cached = (
-                        cached - usage.last_cached
-                        if cached >= usage.last_cached
-                        else cached
-                    )
-                    # Codex 客户端把缓存输入单列计入本地活动；这里沿用相同口径，
-                    # 否则累计与单聊天峰值会显著低于客户端统计页。
-                    delta = delta_total + delta_cached
+                    # total_tokens 已包含缓存输入；再次叠加 cached_input_tokens 会重复计数。
+                    delta = delta_total
                     usage.last_total = total
-                    usage.last_cached = cached
-                    usage.peak_total = max(usage.peak_total, total + cached)
+                    usage.peak_total = max(usage.peak_total, total)
                     if delta <= 0 or observed_at is None:
                         continue
                     usage_day = observed_at.astimezone().date().isoformat()
@@ -258,7 +276,9 @@ class CodexProvider(Provider):
     @staticmethod
     def _compact_tokens(value: int) -> str:
         denominator, suffix = (100_000_000, "亿") if value >= 100_000_000 else (10_000, "万")
-        text = f"{value / denominator:.2f}".rstrip("0").rstrip(".")
+        # Codex 账号页保留 1 位小数并去尾零；采用相同显示口径避免
+        # 原始值相同却因 26.08 亿/26.1 亿的精度差异看起来不一致。
+        text = f"{value / denominator:.1f}".rstrip("0").rstrip(".")
         return f"{text}{suffix}"
 
     @staticmethod
@@ -311,20 +331,200 @@ class CodexProvider(Provider):
         current_streak, longest_streak = self._streaks(active_days)
         total_tokens = sum(daily.values())
         peak_tokens = max((usage.peak_total for usage in usages), default=0)
+        detail = "服务端统计暂不可用，当前显示本机 Codex 会话日志估算"
         statistics = (
-            QuotaMetric("累计 Token 数", self._compact_tokens(total_tokens)),
-            QuotaMetric("峰值 Token 数", self._compact_tokens(peak_tokens)),
-            QuotaMetric("最长任务时长", self._duration_text(longest_seconds)),
-            QuotaMetric("当前连续天数", f"{current_streak} 天"),
-            QuotaMetric("最长连续天数", f"{longest_streak} 天"),
+            QuotaMetric("累计 Token 数", self._compact_tokens(total_tokens), detail),
+            QuotaMetric("峰值 Token 数", self._compact_tokens(peak_tokens), detail),
+            QuotaMetric("最长任务时长", self._duration_text(longest_seconds), detail),
+            QuotaMetric("当前连续天数", f"{current_streak} 天", detail),
+            QuotaMetric("最长连续天数", f"{longest_streak} 天", detail),
         )
         return tuple(sorted(daily.items())), statistics
 
+    def _activity_cache_key(
+        self, account_id: str | None, claims: Mapping[str, Any]
+    ) -> str:
+        if account_id:
+            return f"account:{account_id}"
+        email = str(claims.get("email") or "").strip().lower()
+        if email:
+            return f"email:{email}"
+        return f"home:{self._home().resolve(strict=False)}"
+
+    def _activity_snapshot(
+        self,
+        cache_key: str,
+        headers: dict[str, str] | None = None,
+    ) -> _ActivityData:
+        now = time.monotonic()
+        with self._session_cache_lock:
+            cached = self._activity_cache.get(cache_key)
+        if cached and (
+            now - cached[0] < self._activity_cache_ttl_seconds or headers is None
+        ):
+            activity, weekly_activity, statistics = cached[1]
+            self._activity_data_source = "cache" if activity else ""
+            self._weekly_activity_data_source = "cache" if weekly_activity else ""
+            self._statistics_data_source = "cache" if statistics else ""
+            return cached[1]
+
+        # 额度窗口仍按用户配置刷新；账号统计接口独立限频为一小时。
+        # 本机会话只补近 7 天图的当天值，不能污染官方热力图和底部统计。
+        local_rows, _local_statistics = self._local_activity()
+        today = datetime.now().astimezone().date().isoformat()
+        local_today_tokens = dict(local_rows).get(today, 0)
+        if headers is None:
+            weekly_activity = ((today, local_today_tokens),) if local_today_tokens else ()
+            self._activity_data_source = ""
+            self._weekly_activity_data_source = "local" if weekly_activity else ""
+            self._statistics_data_source = ""
+            return (), weekly_activity, ()
+        else:
+            profile_activity = self._profile_activity(headers)
+            # 统计接口暂时不可用时优先展示最后一次官方结果；从未成功过时
+            # 只允许近 7 天图显示本机当天估算，其他统计保持空白。
+            if profile_activity is not None:
+                activity, statistics = profile_activity
+                weekly = dict(activity)
+                merged_local_today = local_today_tokens > 0 and today not in weekly
+                if merged_local_today:
+                    weekly[today] = local_today_tokens
+                result = activity, tuple(sorted(weekly.items())), statistics
+                self._activity_data_source = "interface"
+                self._weekly_activity_data_source = (
+                    "mixed" if merged_local_today else "interface"
+                )
+                self._statistics_data_source = "interface"
+            elif cached is not None:
+                result = cached[1]
+                activity, weekly_activity, statistics = result
+                self._activity_data_source = "cache" if activity else ""
+                self._weekly_activity_data_source = "cache" if weekly_activity else ""
+                self._statistics_data_source = "cache" if statistics else ""
+            else:
+                weekly_activity = (
+                    ((today, local_today_tokens),) if local_today_tokens else ()
+                )
+                result = (), weekly_activity, ()
+                self._activity_data_source = ""
+                self._weekly_activity_data_source = (
+                    "local" if weekly_activity else ""
+                )
+                self._statistics_data_source = ""
+        with self._session_cache_lock:
+            self._activity_cache[cache_key] = (time.monotonic(), result)
+        return result
+
+    def _local_only_quota(self, cache_key: str) -> ProviderQuota | None:
+        activity, weekly_activity, statistics = self._activity_snapshot(cache_key)
+        return (
+            ProviderQuota(
+                activity=activity,
+                statistics=statistics,
+                activity_source=self._activity_data_source,
+                weekly_activity=weekly_activity,
+                weekly_activity_source=self._weekly_activity_data_source,
+                statistics_source=self._statistics_data_source,
+            )
+            if activity or weekly_activity or statistics
+            else None
+        )
+
     @staticmethod
-    def _local_only_quota(
-        activity: tuple[tuple[str, int], ...], statistics: tuple[QuotaMetric, ...]
-    ) -> ProviderQuota | None:
-        return ProviderQuota(activity=activity, statistics=statistics) if activity else None
+    def _nonnegative_int(value: Any) -> int | None:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _profile_activity(
+        self, headers: dict[str, str]
+    ) -> tuple[tuple[tuple[str, int], ...], tuple[QuotaMetric, ...]] | None:
+        try:
+            response = self._metadata_session.get(
+                "https://chatgpt.com/backend-api/wham/profiles/me",
+                headers=headers,
+                timeout=(3, 5),
+            )
+        except requests.RequestException:
+            return None
+        if not response.ok:
+            return None
+        try:
+            payload = response.json()
+        except (requests.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict) and str(metadata.get("stats_error") or "").strip():
+            return None
+        stats = payload.get("stats")
+        if not isinstance(stats, dict):
+            return None
+
+        daily: dict[str, int] = {}
+        buckets = stats.get("daily_usage_buckets")
+        if isinstance(buckets, list):
+            for bucket in buckets:
+                if not isinstance(bucket, dict):
+                    continue
+                usage_day = str(bucket.get("start_date") or "").strip()
+                try:
+                    date.fromisoformat(usage_day)
+                except ValueError:
+                    continue
+                tokens = self._nonnegative_int(bucket.get("tokens"))
+                if tokens is None:
+                    continue
+                daily[usage_day] = daily.get(usage_day, 0) + tokens
+
+        total_tokens = self._nonnegative_int(stats.get("lifetime_tokens"))
+        peak_tokens = self._nonnegative_int(stats.get("peak_daily_tokens"))
+        longest_seconds = self._nonnegative_int(stats.get("longest_running_turn_sec"))
+        current_streak = self._nonnegative_int(stats.get("current_streak_days"))
+        longest_streak = self._nonnegative_int(stats.get("longest_streak_days"))
+        if not daily and all(
+            value is None
+            for value in (
+                total_tokens,
+                peak_tokens,
+                longest_seconds,
+                current_streak,
+                longest_streak,
+            )
+        ):
+            return None
+
+        detail = "来自 Codex 账号统计"
+        statistics = (
+            QuotaMetric(
+                "累计 Token 数",
+                "--" if total_tokens is None else self._compact_tokens(total_tokens),
+                detail,
+            ),
+            QuotaMetric(
+                "峰值 Token 数",
+                "--" if peak_tokens is None else self._compact_tokens(peak_tokens),
+                detail,
+            ),
+            QuotaMetric(
+                "最长任务时长",
+                "--" if longest_seconds is None else self._duration_text(longest_seconds),
+                detail,
+            ),
+            QuotaMetric(
+                "当前连续天数",
+                "--" if current_streak is None else f"{current_streak} 天",
+                detail,
+            ),
+            QuotaMetric(
+                "最长连续天数",
+                "--" if longest_streak is None else f"{longest_streak} 天",
+                detail,
+            ),
+        )
+        return tuple(sorted(daily.items())), statistics
 
     def _subscription_active_until(
         self, headers: dict[str, str], account_id: str
@@ -338,11 +538,11 @@ class CodexProvider(Provider):
             if now - cached_at < self._subscription_cache_ttl and active_until > active_now:
                 return active_until
         try:
-            response = self._session.get(
+            response = self._metadata_session.get(
                 "https://chatgpt.com/backend-api/subscriptions",
                 headers=headers,
                 params={"account_id": account_id},
-                timeout=(5, 20),
+                timeout=(3, 5),
             )
         except requests.RequestException:
             return None
@@ -361,7 +561,6 @@ class CodexProvider(Provider):
         return active_until
 
     def fetch_quota(self) -> tuple[ProviderQuota | None, FetchError | None]:
-        activity, statistics = self._local_activity()
         try:
             access_token, account_id, claims = self._credentials()
         except (OSError, ValueError, json.JSONDecodeError):
@@ -372,33 +571,35 @@ class CodexProvider(Provider):
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
             "User-Agent": "TokenMeter",
+            "originator": "Codex Desktop",
         }
         if account_id:
             headers["ChatGPT-Account-Id"] = account_id
+        activity_cache_key = self._activity_cache_key(account_id, claims)
         try:
             response = self._session.get(
                 "https://chatgpt.com/backend-api/wham/usage",
                 headers=headers,
-                timeout=(5, 20),
+                timeout=(3, 10),
             )
         except requests.Timeout:
-            return self._local_only_quota(activity, statistics), FetchError(
+            return self._local_only_quota(activity_cache_key), FetchError(
                 "NETWORK_TIMEOUT", "Codex 订阅额度", "连接 Codex 额度服务超时"
             )
         except requests.RequestException:
-            return self._local_only_quota(activity, statistics), FetchError(
+            return self._local_only_quota(activity_cache_key), FetchError(
                 "NETWORK_ERROR", "Codex 订阅额度", "无法连接 Codex 额度服务"
             )
         if response.status_code in (401, 403):
-            return self._local_only_quota(activity, statistics), FetchError(
+            return self._local_only_quota(activity_cache_key), FetchError(
                 "AUTH_EXPIRED", "Codex 订阅额度", "Codex 登录已过期，请运行 codex 重新登录"
             )
         if response.status_code == 429:
-            return self._local_only_quota(activity, statistics), FetchError(
+            return self._local_only_quota(activity_cache_key), FetchError(
                 "RATE_LIMITED", "Codex 订阅额度", "Codex 额度查询过于频繁"
             )
         if not response.ok:
-            return self._local_only_quota(activity, statistics), FetchError(
+            return self._local_only_quota(activity_cache_key), FetchError(
                 "SERVER_ERROR",
                 "Codex 订阅额度",
                 f"Codex 额度服务返回 HTTP {response.status_code}",
@@ -408,9 +609,13 @@ class CodexProvider(Provider):
             if not isinstance(payload, dict):
                 raise ValueError
         except (requests.JSONDecodeError, ValueError):
-            return self._local_only_quota(activity, statistics), FetchError(
+            return self._local_only_quota(activity_cache_key), FetchError(
                 "INVALID_RESPONSE", "Codex 订阅额度", "Codex 额度数据结构已变化"
             )
+
+        activity, weekly_activity, statistics = self._activity_snapshot(
+            activity_cache_key, headers
+        )
 
         rate_limit = payload.get("rate_limit") or {}
         windows = [
@@ -452,6 +657,10 @@ class CodexProvider(Provider):
             account_label=email,
             plan=str(payload.get("plan_type") or ""),
             account_plan_active_until=active_until,
+            activity_source=self._activity_data_source,
+            weekly_activity=weekly_activity,
+            weekly_activity_source=self._weekly_activity_data_source,
+            statistics_source=self._statistics_data_source,
         ), None
 
 

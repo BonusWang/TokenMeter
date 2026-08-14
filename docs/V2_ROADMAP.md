@@ -27,7 +27,7 @@ Codex 额度语义参考 [CodexBar Codex Provider](https://github.com/steipete/C
 - 增加通用 `ProviderQuota`、`QuotaWindow` 和 `QuotaMetric` 数据结构。
 - Provider 注册表收缩为 DeepSeek、MiMo、Codex，继续复用现有连接测试、快照隔离和错误状态。
 - Codex 读取本机 OAuth 登录，查询主窗口、次窗口、专项限额与 Credits。
-- Codex 只解析本机 `sessions/**/*.jsonl` 中的时间戳和 `token_count` 事件，生成年度活动热力图及五项本地统计，不读取或上传对话正文。
+- Codex 从账号资料统计端点读取年度活动与五项统计；本机会话日志只补近 7 天图中接口缺失的当天 Token，不能写入年度热力图或底部统计，也不读取或上传对话正文。
 - 顶栏保留一个 Provider 下拉框，切换后立即清空旧范围并刷新，避免跨 Provider 短暂错标。
 - 主面板、统计区和悬浮球根据 Provider 能力自动切换“订阅额度”或“API 账单”视图。
 - Codex 左侧额度卡展示已用/剩余比例和重置倒计时，右侧展示近 7 天 Token 使用量；套餐、账号和附加额度动态填充。
@@ -36,12 +36,12 @@ Codex 额度语义参考 [CodexBar Codex Provider](https://github.com/steipete/C
 
 CodexBar 的这类能力依赖本机 CLI OAuth 会话和产品内部额度端点，并不等同于 OpenAI Admin API。TokenMeter 只读取用户已经登录的本机凭据文件，不采集密码。
 
-内部额度端点可能随产品更新而变化，因此每个 Provider 独立解析、独立报错。认证失败不会回退到估算数据，也不会把上一个账号或 Provider 的缓存重新标成当前额度。
+内部额度端点可能随产品更新而变化，因此每个 Provider 独立解析、独立报错。远程额度与本机估算会明确区分，也不会把上一个账号或 Provider 的缓存重新标成当前额度。
 
 当前基础批次还有这些明确限制：
 
 - Codex 尚未加入 `codex app-server` JSON-RPC 回退和 OAuth 自动刷新。
-- 本地统计以现有 Codex JSONL 为准；已删除或不在 `CODEX_HOME` 中的会话不会被计入。
+- 资料统计端点不可用时，年度热力图与底部统计保留最后成功缓存；仅近 7 天图的当天值可用现有 Codex JSONL 估算。
 
 ## 后续发布批次
 

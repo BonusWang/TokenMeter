@@ -181,7 +181,10 @@ class FloatingWidget(QWidget):
         super().__init__()
         self.tray = tray_icon
         self._expanded = False
-        self._data = TokenData()
+        # 启动时先展示同一账号的落盘快照；网络刷新继续在后台按原频率进行。
+        self._data = (
+            TokenData.persisted_snapshot(config_manager.all_config()) or TokenData()
+        )
         self._refresh_lock = threading.Lock()
         self._refreshing = False
         self._request_id = 0
