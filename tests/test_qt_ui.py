@@ -2134,12 +2134,13 @@ def test_codex_water_ball_animation_timer_drops_to_idle_cadence_after_settling()
     ball.close()
 
 
-def test_codex_water_ball_idle_wave_is_subpixel_and_blends_back_after_interaction():
+def test_codex_water_ball_idle_wave_is_low_amplitude_and_blends_back_after_interaction():
     ball = FloatingUsageBall(124)
     rect = QRectF(8, 8, 104, 104)
     initial_offsets = ball._idle_surface_offsets(rect)
 
-    assert max(initial_offsets) - min(initial_offsets) < 2.4
+    peak_to_peak = max(initial_offsets) - min(initial_offsets)
+    assert 3.5 < peak_to_peak < 5.2
     assert max(initial_offsets) != min(initial_offsets)
     assert sum(initial_offsets) == pytest.approx(0)
     for _ in range(200):
@@ -2158,14 +2159,61 @@ def test_codex_water_ball_idle_wave_is_subpixel_and_blends_back_after_interactio
     ball.close()
 
 
-def test_codex_water_ball_idle_source_adds_bounded_local_motion_at_random_intervals():
-    surface = LiquidSurfaceState()
-    surface.idle_impulse_remaining = 0
-    surface.step(0.04)
+def test_codex_water_ball_idle_surface_wave_travels_horizontally_without_level_drift():
+    ball = FloatingUsageBall(124)
+    rect = QRectF(8, 8, 104, 104)
+    first_offsets = ball._idle_surface_offsets(rect)
+    first_peak = max(range(len(first_offsets)), key=first_offsets.__getitem__)
 
-    assert max(abs(value) for value in surface.velocities) < 0.03
-    assert max(abs(value) for value in surface.velocities) > 0.001
-    assert 2.0 <= surface.idle_impulse_remaining <= 5.0
+    ball._liquid_surface.idle_phase += 1.2
+    next_offsets = ball._idle_surface_offsets(rect)
+    next_peak = max(range(len(next_offsets)), key=next_offsets.__getitem__)
+
+    assert next_offsets != first_offsets
+    assert next_peak != first_peak
+    assert sum(first_offsets) == pytest.approx(0)
+    assert sum(next_offsets) == pytest.approx(0)
+    ball.close()
+
+
+@pytest.mark.parametrize("remaining", [98, 100])
+def test_codex_high_water_keeps_visible_travelling_surface_wave(remaining):
+    ball = FloatingUsageBall(124)
+    ball.set_quota_state(remaining, "2 小时后重置")
+    inner = ball._liquid_inner_rect()
+    ratio = remaining / 100
+    surface_y = ball._visual_surface_y(inner, ratio)
+
+    _, first_surface = ball._surface_paths(inner, surface_y, ratio)
+    first_y = [first_surface.elementAt(index).y for index in range(first_surface.elementCount())]
+    ball._liquid_surface.idle_phase += 1.2
+    _, next_surface = ball._surface_paths(inner, surface_y, ratio)
+    next_y = [next_surface.elementAt(index).y for index in range(next_surface.elementCount())]
+
+    assert max(first_y) - min(first_y) > 0.35
+    assert next_y != first_y
+    ball.close()
+
+
+def test_codex_high_water_observation_band_stays_narrow_and_monotonic():
+    ball = FloatingUsageBall(124)
+    inner = ball._liquid_inner_rect()
+    surface_90 = ball._visual_surface_y(inner, 0.90)
+    surface_98 = ball._visual_surface_y(inner, 0.98)
+    surface_100 = ball._visual_surface_y(inner, 1.0)
+
+    assert surface_90 > surface_98 > surface_100
+    assert surface_100 - inner.top() == pytest.approx(7.0)
+    ball.close()
+
+
+def test_codex_water_ball_idle_does_not_inject_random_physics_motion():
+    surface = LiquidSurfaceState()
+    for _ in range(250):
+        surface.step(0.04)
+
+    assert surface.heights == pytest.approx([0] * surface.node_count)
+    assert surface.velocities == pytest.approx([0] * surface.node_count)
 
 
 def test_codex_water_ball_material_gets_darker_toward_the_bottom():
@@ -2385,7 +2433,7 @@ def test_codex_high_water_pointer_injects_internal_tail_flow_from_any_water_dept
 
 
 @pytest.mark.parametrize("remaining", [98, 100])
-def test_codex_high_water_keeps_visible_internal_idle_motion(remaining):
+def test_codex_high_water_keeps_visible_surface_idle_motion(remaining):
     ball = FloatingUsageBall(88)
     ball.set_quota_state(remaining, "2 小时后重置")
     ball.show()
@@ -2397,14 +2445,14 @@ def test_codex_high_water_keeps_visible_internal_idle_motion(remaining):
         ball._advance_wave()
     APP.processEvents()
     next_frame = ball.grab().toImage()
-    changed_internal_pixels = sum(
+    changed_surface_pixels = sum(
         1
-        for y in range(22, 76)
-        for x in range(12, 76)
+        for y in range(4, 24)
+        for x in range(8, 80)
         if first_frame.pixelColor(x, y) != next_frame.pixelColor(x, y)
     )
 
-    assert changed_internal_pixels > 40
+    assert changed_surface_pixels > 10
     ball.close()
 
 
