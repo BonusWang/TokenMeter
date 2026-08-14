@@ -17,7 +17,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from ui.qt_theme import current_theme, theme_controller
+from ui.qt_theme import DARK_THEME, LIGHT_THEME, current_theme, theme_controller
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,9 @@ class FloatingUsageBall(QWidget):
         self._wave_timer.setInterval(ACTIVE_FRAME_INTERVAL_MS)
         self._wave_timer.timeout.connect(self._advance_wave)
         self._quota_geometry_cache: dict[float, tuple[QRectF, QPainterPath]] = {}
-        self._water_gradient_cache: dict[tuple[str, float, float], QLinearGradient] = {}
+        self._water_gradient_cache: dict[
+            tuple[str, str, float, float], QLinearGradient
+        ] = {}
         self._quota_font_cache: dict[int, QFont] = {}
         self._debug_profile: dict[str, tuple[int, int]] = {}
         self._water_shine_gradient = QLinearGradient(-36, 0, 36, 0)
@@ -238,11 +240,7 @@ class FloatingUsageBall(QWidget):
         self._water_shine_gradient.setColorAt(0.62, QColor(255, 255, 255, 4))
         self._water_shine_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
         self._deep_flow_gradient = QLinearGradient(-44, 0, 44, 0)
-        self._deep_flow_gradient.setColorAt(0.0, QColor(8, 35, 98, 0))
-        self._deep_flow_gradient.setColorAt(0.38, QColor(8, 35, 98, 3))
-        self._deep_flow_gradient.setColorAt(0.5, QColor(8, 35, 98, 24))
-        self._deep_flow_gradient.setColorAt(0.62, QColor(8, 35, 98, 3))
-        self._deep_flow_gradient.setColorAt(1.0, QColor(8, 35, 98, 0))
+        self._refresh_deep_flow_gradient()
         self._internal_flow_center = QPointF(DESIGN_SIZE / 2, DESIGN_SIZE / 2)
         self._internal_flow_direction = QPointF(1, 0)
         self._internal_flow_velocity = QPointF()
@@ -262,7 +260,35 @@ class FloatingUsageBall(QWidget):
 
     def _on_theme_changed(self, _mode: str, _resolved: str) -> None:
         self._water_gradient_cache.clear()
+        self._refresh_deep_flow_gradient()
         self.update()
+
+    @staticmethod
+    def _water_top_color(theme) -> QColor:
+        default = LIGHT_THEME if theme.name == "light" else DARK_THEME
+        if theme.accent.upper() == default.accent.upper():
+            return QColor("#73BDFF" if theme.name == "light" else "#5CA6FF")
+        return QColor(theme.accent).lighter(138 if theme.name == "light" else 126)
+
+    def _refresh_deep_flow_gradient(self) -> None:
+        theme = current_theme()
+        default = LIGHT_THEME if theme.name == "light" else DARK_THEME
+        deep = (
+            QColor(8, 35, 98)
+            if theme.accent.upper() == default.accent.upper()
+            else QColor(theme.accent).darker(175)
+        )
+        self._deep_flow_gradient = QLinearGradient(-44, 0, 44, 0)
+        for position, alpha in (
+            (0.0, 0),
+            (0.38, 3),
+            (0.5, 24),
+            (0.62, 3),
+            (1.0, 0),
+        ):
+            color = QColor(deep)
+            color.setAlpha(alpha)
+            self._deep_flow_gradient.setColorAt(position, color)
 
     def _record_debug_profile(self, name: str, elapsed_ns: int) -> None:
         if not logger.isEnabledFor(logging.DEBUG):
@@ -881,11 +907,11 @@ class FloatingUsageBall(QWidget):
         return inner, clip
 
     def _water_gradient(self, theme, surface_y: float, bottom: float) -> QLinearGradient:
-        key = (theme.name, round(surface_y, 2), round(bottom, 2))
+        key = (theme.name, theme.accent, round(surface_y, 2), round(bottom, 2))
         cached = self._water_gradient_cache.get(key)
         if cached is not None:
             return cached
-        water_top = QColor("#73BDFF" if theme.name == "light" else "#5CA6FF")
+        water_top = self._water_top_color(theme)
         water_top.setAlpha(205 if theme.name == "light" else 218)
         upper = QColor(theme.accent_hover)
         upper.setAlpha(224)
@@ -994,7 +1020,12 @@ class FloatingUsageBall(QWidget):
             self._paint_internal_flow(painter, theme, inner, water_path, ratio)
 
             subsurface = self._subsurface_highlight_path(inner, surface_y, ratio)
-            subsurface_color = QColor(220, 245, 255, 34)
+            default = LIGHT_THEME if theme.name == "light" else DARK_THEME
+            if theme.accent.upper() == default.accent.upper():
+                subsurface_color = QColor(220, 245, 255, 34)
+            else:
+                subsurface_color = QColor(theme.accent).lighter(175)
+                subsurface_color.setAlpha(34)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(
                 QPen(

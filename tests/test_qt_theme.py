@@ -14,6 +14,8 @@ from ui.qt_theme import (
     build_app_style,
     configure_theme,
     current_theme,
+    derive_theme_tokens,
+    panel_background,
 )
 
 
@@ -55,6 +57,41 @@ def test_theme_tokens_meet_readability_and_focus_contrast():
         assert _contrast(tokens.border, tokens.surface) >= 3.0
         assert _contrast(tokens.border_hover, tokens.surface) >= 3.0
         assert len(tokens.heat) == 6
+
+
+def test_default_appearance_preserves_existing_tokens_and_custom_accent_derives_all_levels():
+    assert derive_theme_tokens(LIGHT_THEME, LIGHT_THEME.accent, 100) == LIGHT_THEME
+    assert derive_theme_tokens(DARK_THEME, DARK_THEME.accent, 100) == DARK_THEME
+
+    custom = derive_theme_tokens(DARK_THEME, "#D14C2F", 82)
+
+    assert custom.accent == "#D14C2F"
+    assert custom.heat[-1] == custom.accent
+    assert len(set(custom.heat)) == 6
+    assert custom.accent_hover != custom.accent
+    assert custom.accent_soft != custom.accent
+    assert custom.selection == custom.accent
+    assert custom.panel_opacity == 82
+    assert panel_background(custom.window, custom).alpha() == round(255 * 0.82)
+
+
+def test_custom_appearance_reapplies_same_mode_and_keeps_light_dark_independent():
+    app = _FakeApplication(Qt.ColorScheme.Dark)
+    controller = ThemeController(app, "dark")
+    changes = []
+    controller.changed.connect(lambda mode, resolved: changes.append((mode, resolved)))
+
+    controller.set_appearance("dark", "#D14C2F", 84)
+    controller.set_appearance("light", "#198754", 92)
+
+    assert controller.tokens.accent == "#D14C2F"
+    assert controller.tokens.panel_opacity == 84
+    assert controller.appearance("light") == ("#198754", 92)
+    assert changes == [("dark", "dark")]
+
+    controller.set_mode("light")
+    assert controller.tokens.accent == "#198754"
+    assert controller.tokens.panel_opacity == 92
 
 
 def test_minute_tooltip_cost_uses_each_theme_accent():

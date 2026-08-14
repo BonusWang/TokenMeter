@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -40,11 +40,15 @@ class ThemeTokens:
     accent: str
     accent_hover: str
     accent_soft: str
+    accent_text: str
+    on_accent: str
+    selection: str
     success: str
     warning: str
     danger: str
     shadow: str
     heat: tuple[str, ...]
+    panel_opacity: int
 
 
 LIGHT_THEME = ThemeTokens(
@@ -62,11 +66,15 @@ LIGHT_THEME = ThemeTokens(
     accent="#2F72E8",
     accent_hover="#1E61D2",
     accent_soft="#E9F1FF",
+    accent_text="#2F72E8",
+    on_accent="#FFFFFF",
+    selection="#2076FA",
     success="#087A4A",
     warning="#946000",
     danger="#C43B4D",
     shadow="#24111827",
     heat=("#F0F3F8", "#DCE8FB", "#B7D0F8", "#84AEF3", "#4E88ED", "#2F72E8"),
+    panel_opacity=100,
 )
 
 DARK_THEME = ThemeTokens(
@@ -84,11 +92,15 @@ DARK_THEME = ThemeTokens(
     accent="#3478F6",
     accent_hover="#5A93FA",
     accent_soft="#20304A",
+    accent_text="#3478F6",
+    on_accent="#FFFFFF",
+    selection="#2076FA",
     success="#18C77A",
     warning="#F2AB3B",
     danger="#FF6477",
     shadow="#6E000000",
     heat=("#242424", "#28364E", "#294C7A", "#2B62A7", "#2F76D7", "#3B82F6"),
+    panel_opacity=100,
 )
 
 
@@ -138,6 +150,109 @@ LOWER_CARD_HEIGHT = 128
 STATUS_BAR_HEIGHT = 38
 
 
+def _mix_color(first: str, second: str, second_weight: float) -> str:
+    """Blend two opaque colors while retaining the selected accent's hue."""
+    left = QColor(first)
+    right = QColor(second)
+    weight = max(0.0, min(1.0, float(second_weight)))
+    mixed = QColor(
+        round(left.red() * (1 - weight) + right.red() * weight),
+        round(left.green() * (1 - weight) + right.green() * weight),
+        round(left.blue() * (1 - weight) + right.blue() * weight),
+    )
+    return mixed.name(QColor.NameFormat.HexRgb).upper()
+
+
+def _relative_luminance(color: str) -> float:
+    value = QColor(color)
+
+    def linear(channel: float) -> float:
+        return (
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+        )
+
+    red, green, blue = (
+        linear(channel)
+        for channel in (value.redF(), value.greenF(), value.blueF())
+    )
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _contrast(first: str, second: str) -> float:
+    lighter, darker = sorted(
+        (_relative_luminance(first), _relative_luminance(second)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _readable_accent(accent: str, surface: str, theme_name: str) -> str:
+    if _contrast(accent, surface) >= 4.5:
+        return accent
+    target = "#000000" if theme_name == "light" else "#FFFFFF"
+    for step in range(1, 11):
+        candidate = _mix_color(accent, target, step / 10)
+        if _contrast(candidate, surface) >= 4.5:
+            return candidate
+    return target
+
+
+def derive_theme_tokens(
+    base: ThemeTokens,
+    accent_color: str,
+    panel_opacity: int = 100,
+) -> ThemeTokens:
+    """Derive every non-semantic accent role from one user-selected color."""
+    accent = QColor(str(accent_color).strip())
+    if not accent.isValid() or accent.alpha() != 255:
+        raise ValueError("Accent color must be an opaque #RRGGBB color")
+    normalized = accent.name(QColor.NameFormat.HexRgb).upper()
+    opacity = int(panel_opacity)
+    if not 70 <= opacity <= 100:
+        raise ValueError("Panel opacity must be between 70 and 100")
+    if normalized == base.accent.upper():
+        # 精确复用既有派生色，保证用户未自定义时与当前版本像素级一致。
+        return replace(base, panel_opacity=opacity)
+
+    hover_target = "#000000" if base.name == "light" else "#FFFFFF"
+    heat_base = base.heat[0]
+    heat = (
+        heat_base,
+        *(
+            _mix_color(heat_base, normalized, weight)
+            for weight in (0.18, 0.36, 0.56, 0.76)
+        ),
+        normalized,
+    )
+    black_contrast = _contrast("#000000", normalized)
+    white_contrast = _contrast("#FFFFFF", normalized)
+    return replace(
+        base,
+        accent=normalized,
+        accent_hover=_mix_color(normalized, hover_target, 0.16),
+        accent_soft=_mix_color(base.surface, normalized, 0.16),
+        accent_text=_readable_accent(normalized, base.surface, base.name),
+        on_accent="#000000" if black_contrast > white_contrast else "#FFFFFF",
+        selection=normalized,
+        heat=heat,
+        panel_opacity=opacity,
+    )
+
+
+def panel_background(color: str, theme: ThemeTokens | None = None) -> QColor:
+    """Return a translucent panel background without fading foreground content."""
+    tokens = theme or current_theme()
+    result = QColor(color)
+    result.setAlpha(round(255 * tokens.panel_opacity / 100))
+    return result
+
+
+def _panel_css(color: str, theme: ThemeTokens) -> str:
+    value = panel_background(color, theme)
+    return f"rgba({value.red()}, {value.green()}, {value.blue()}, {value.alpha()})"
+
+
 def _theme_tokens(theme: ThemeTokens | str | None) -> ThemeTokens:
     if isinstance(theme, ThemeTokens):
         return theme
@@ -151,6 +266,9 @@ def _theme_tokens(theme: ThemeTokens | str | None) -> ThemeTokens:
 def build_app_style(theme: ThemeTokens | str | None = None) -> str:
     """Build the complete application QSS for one resolved theme."""
     tokens = _theme_tokens(theme)
+    panel_window = _panel_css(tokens.window, tokens)
+    panel_surface = _panel_css(tokens.surface, tokens)
+    panel_elevated = _panel_css(tokens.elevated, tokens)
     divider = QColor(tokens.border)
     divider_color = f"rgba({divider.red()}, {divider.green()}, {divider.blue()}, 82)"
     return f"""
@@ -166,7 +284,7 @@ QDialog {{
     background: {tokens.window};
 }}
 QFrame#panelFrame {{
-    background: {tokens.window};
+    background: {panel_window};
     border: 1px solid {tokens.border};
     border-radius: 18px;
 }}
@@ -175,12 +293,12 @@ QWidget#panelHeader, QWidget#topSection {{
     border: 0;
 }}
 QFrame#card {{
-    background: {tokens.surface};
+    background: {panel_surface};
     border: 1px solid {tokens.border};
     border-radius: 14px;
 }}
 QFrame#card:hover {{
-    background: {tokens.elevated};
+    background: {panel_elevated};
     border-color: {tokens.border_hover};
 }}
 QFrame#settingsCard {{
@@ -234,7 +352,7 @@ QAbstractItemView#headerProviderView {{
 }}
 QLabel#panelSubtitle {{ color: {tokens.text}; font-size: 16px; font-weight: 400; }}
 QLabel#pricingBadge {{
-    color: {tokens.accent};
+    color: {tokens.accent_text};
     background: {tokens.accent_soft};
     border: 1px solid {tokens.accent};
     border-radius: 9px;
@@ -354,8 +472,8 @@ QToolButton#activityModeButton {{
     font-size: 11px;
 }}
 QToolButton#activityModeButton:checked {{
-    color: #FFFFFF;
-    background: #2076FA;
+    color: {tokens.on_accent};
+    background: {tokens.selection};
 }}
 QToolButton#minuteDatePreviousButton,
 QToolButton#minuteDateTextButton,
@@ -390,7 +508,7 @@ QToolButton#minuteDateNextButton:hover {{
 QToolButton#minuteDatePreviousButton:pressed,
 QToolButton#minuteDateTextButton:pressed,
 QToolButton#minuteDateNextButton:pressed {{
-    color: #FFFFFF;
+    color: {tokens.on_accent};
     background: {tokens.accent};
 }}
 QToolButton#minuteDatePreviousButton:disabled,
@@ -417,7 +535,7 @@ QToolButton#minuteCalendarNavButton {{
     min-height: 26px;
     max-height: 26px;
     padding: 0;
-    color: {tokens.accent};
+    color: {tokens.accent_text};
     background: transparent;
     border: 0;
     border-radius: 5px;
@@ -477,14 +595,14 @@ QLabel#minuteTooltipMuted {{
     font-size: 11px;
 }}
 QLabel#minuteTooltipCost {{
-    color: {tokens.accent};
+    color: {tokens.accent_text};
     background: transparent;
     border: 0;
     font-size: 11px;
     font-weight: 600;
 }}
 QPushButton#primaryButton {{
-    color: white;
+    color: {tokens.on_accent};
     background: {tokens.accent};
     border-color: {tokens.accent};
     font-weight: 600;
@@ -509,7 +627,7 @@ QComboBox QAbstractItemView {{
     background: {tokens.elevated};
     border: 1px solid {tokens.border};
     selection-background-color: {tokens.accent};
-    selection-color: white;
+    selection-color: {tokens.on_accent};
     outline: 0;
     padding: 4px;
 }}
@@ -573,7 +691,7 @@ def build_qt_palette(theme: ThemeTokens | str | None = None) -> QPalette:
         QPalette.ColorRole.ButtonText: tokens.text,
         QPalette.ColorRole.BrightText: tokens.danger,
         QPalette.ColorRole.Highlight: tokens.accent,
-        QPalette.ColorRole.HighlightedText: "#FFFFFF",
+        QPalette.ColorRole.HighlightedText: tokens.on_accent,
         QPalette.ColorRole.Link: tokens.accent,
         QPalette.ColorRole.LinkVisited: tokens.accent_hover,
         QPalette.ColorRole.PlaceholderText: tokens.muted,
@@ -603,7 +721,12 @@ class ThemeController(QObject):
     def __init__(
         self,
         app: QGuiApplication,
-        mode: ThemeMode = "dark",
+        mode: ThemeMode | str = "dark",
+        *,
+        light_accent: str = LIGHT_THEME.accent,
+        dark_accent: str = DARK_THEME.accent,
+        light_panel_opacity: int = 100,
+        dark_panel_opacity: int = 100,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -611,6 +734,11 @@ class ThemeController(QObject):
         self._style_hints = app.styleHints()
         self._mode: ThemeMode = "dark"
         self._resolved: Literal["light", "dark"] = "dark"
+        self._appearances = {
+            "light": (str(light_accent), int(light_panel_opacity)),
+            "dark": (str(dark_accent), int(dark_panel_opacity)),
+        }
+        self._tokens = DARK_THEME
         self._applied = False
         self._setting_mode = False
         self._style_hints.colorSchemeChanged.connect(self._system_scheme_changed)
@@ -623,6 +751,37 @@ class ThemeController(QObject):
     @property
     def resolved(self) -> Literal["light", "dark"]:
         return self._resolved
+
+    @property
+    def tokens(self) -> ThemeTokens:
+        return self._tokens
+
+    def appearance(self, theme_name: str) -> tuple[str, int]:
+        normalized = str(theme_name).strip().lower()
+        if normalized not in {"light", "dark"}:
+            raise ValueError("Resolved theme must be light or dark")
+        return self._appearances[normalized]
+
+    def set_appearance(
+        self,
+        theme_name: str,
+        accent_color: str,
+        panel_opacity: int,
+    ) -> None:
+        """Update one resolved theme and refresh visible widgets when active."""
+        normalized = str(theme_name).strip().lower()
+        if normalized not in {"light", "dark"}:
+            raise ValueError("Resolved theme must be light or dark")
+        base = LIGHT_THEME if normalized == "light" else DARK_THEME
+        tokens = derive_theme_tokens(base, accent_color, panel_opacity)
+        appearance = (tokens.accent, tokens.panel_opacity)
+        if self._appearances[normalized] == appearance:
+            return
+        self._appearances[normalized] = appearance
+        if self._resolved != normalized:
+            return
+        self._apply(normalized)
+        self.changed.emit(self._mode, self._resolved)
 
     def set_mode(self, mode: ThemeMode | str) -> None:
         normalized = str(mode).strip().lower()
@@ -672,7 +831,10 @@ class ThemeController(QObject):
 
     def _apply(self, resolved: str) -> None:
         self._resolved = "light" if resolved == "light" else "dark"
-        tokens = LIGHT_THEME if self._resolved == "light" else DARK_THEME
+        base = LIGHT_THEME if self._resolved == "light" else DARK_THEME
+        accent, panel_opacity = self._appearances[self._resolved]
+        tokens = derive_theme_tokens(base, accent, panel_opacity)
+        self._tokens = tokens
         self._app.setPalette(build_qt_palette(tokens))
         # QApplication owns setStyleSheet; QGuiApplication is used in the type
         # annotation so the controller can still be tested with compatible apps.
@@ -683,12 +845,29 @@ class ThemeController(QObject):
 _THEME_CONTROLLER: ThemeController | None = None
 
 
-def configure_theme(app: QGuiApplication, mode: ThemeMode | str) -> ThemeController:
+def configure_theme(
+    app: QGuiApplication,
+    mode: ThemeMode | str,
+    *,
+    light_accent: str = LIGHT_THEME.accent,
+    dark_accent: str = DARK_THEME.accent,
+    light_panel_opacity: int = 100,
+    dark_panel_opacity: int = 100,
+) -> ThemeController:
     """Configure and apply the application-wide theme before widgets are built."""
     global _THEME_CONTROLLER
     if _THEME_CONTROLLER is None or _THEME_CONTROLLER._app is not app:
-        _THEME_CONTROLLER = ThemeController(app, mode)
+        _THEME_CONTROLLER = ThemeController(
+            app,
+            mode,
+            light_accent=light_accent,
+            dark_accent=dark_accent,
+            light_panel_opacity=light_panel_opacity,
+            dark_panel_opacity=dark_panel_opacity,
+        )
     else:
+        _THEME_CONTROLLER.set_appearance("light", light_accent, light_panel_opacity)
+        _THEME_CONTROLLER.set_appearance("dark", dark_accent, dark_panel_opacity)
         _THEME_CONTROLLER.set_mode(mode)
     return _THEME_CONTROLLER
 
@@ -708,7 +887,7 @@ def theme_controller() -> ThemeController:
 def current_theme() -> ThemeTokens:
     if _THEME_CONTROLLER is None:
         return DARK_THEME
-    return LIGHT_THEME if _THEME_CONTROLLER.resolved == "light" else DARK_THEME
+    return _THEME_CONTROLLER.tokens
 
 
 # Existing imports keep a stable dark style until configure_theme() takes over.

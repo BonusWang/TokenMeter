@@ -401,6 +401,26 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             config_manager.validate_config({"UI_THEME": "sepia"})
 
+    def test_theme_appearance_defaults_and_ranges_are_validated(self):
+        values = config_manager.validate_config({})
+        self.assertEqual(values["UI_LIGHT_ACCENT_COLOR"], "#2F72E8")
+        self.assertEqual(values["UI_DARK_ACCENT_COLOR"], "#3478F6")
+        self.assertEqual(values["UI_LIGHT_PANEL_OPACITY"], 100)
+        self.assertEqual(values["UI_DARK_PANEL_OPACITY"], 100)
+        self.assertEqual(
+            config_manager.validate_config(
+                {
+                    "UI_LIGHT_ACCENT_COLOR": "#1e61d2",
+                    "UI_DARK_PANEL_OPACITY": 70,
+                }
+            )["UI_LIGHT_ACCENT_COLOR"],
+            "#1e61d2",
+        )
+        with self.assertRaises(ValueError):
+            config_manager.validate_config({"UI_LIGHT_ACCENT_COLOR": "blue"})
+        with self.assertRaises(ValueError):
+            config_manager.validate_config({"UI_DARK_PANEL_OPACITY": 69})
+
     def test_legacy_default_compact_size_is_migrated(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"
         temp_root.mkdir(parents=True, exist_ok=True)
@@ -575,6 +595,39 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config_path.read_text(encoding="utf-8"), original_text)
             self.assertFalse(config_path.with_name("config.json.theme.tmp").exists())
+
+    def test_save_ui_appearance_only_updates_the_selected_theme(self):
+        temp_root = Path.cwd() / ".test-appdata" / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            config_path = Path(directory) / "config.json"
+            disk_values = config_manager._public_values(config_manager.DEFAULT_CONFIG)
+            disk_values["REFRESH_INTERVAL"] = 75_000
+            config_path.write_text(json.dumps(disk_values), encoding="utf-8")
+            old_config = config_manager._config
+            try:
+                draft = config_manager.DEFAULT_CONFIG.copy()
+                draft["DEEPSEEK_API_KEY"] = "connection-test-draft"
+                with (
+                    patch.object(config_manager, "CONFIG_PATH", config_path),
+                    patch.object(config_manager, "_config", draft),
+                    patch.object(config_manager, "_write_credential") as write_credential,
+                ):
+                    result = config_manager.save_ui_appearance(
+                        "dark", "#D14C2F", 82
+                    )
+                    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+                write_credential.assert_not_called()
+                self.assertEqual(result["UI_DARK_ACCENT_COLOR"], "#D14C2F")
+                self.assertEqual(result["UI_DARK_PANEL_OPACITY"], 82)
+                self.assertEqual(saved["UI_DARK_ACCENT_COLOR"], "#D14C2F")
+                self.assertEqual(saved["UI_DARK_PANEL_OPACITY"], 82)
+                self.assertEqual(saved["UI_LIGHT_ACCENT_COLOR"], "#2F72E8")
+                self.assertEqual(saved["REFRESH_INTERVAL"], 75_000)
+                self.assertNotIn("DEEPSEEK_API_KEY", saved)
+            finally:
+                config_manager._config = old_config
 
     def test_backups_exclude_secrets_and_are_limited(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"

@@ -6,6 +6,7 @@ selected provider are shown — keeping the dialog small and focused.
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,11 +14,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Union
 
-from PySide6.QtCore import QSignalBlocker, QThread, QTime, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QSignalBlocker, QThread, QTime, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QColorDialog,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTabWidget,
     QTimeEdit,
@@ -42,7 +45,7 @@ from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
 from data.store import TokenData
-from ui.qt_theme import theme_controller
+from ui.qt_theme import DARK_THEME, LIGHT_THEME, theme_controller
 from ui.qt_update import AppUpdateController
 
 _CARD_PADDING = 18
@@ -115,6 +118,8 @@ class _CookieAcquireWorker(QThread):
 
 class SettingsWindow(QDialog):
     theme_requested = Signal(str)
+    appearance_preview_requested = Signal(str, str, int)
+    appearance_requested = Signal(str, str, int)
 
     def __init__(
         self,
@@ -135,6 +140,12 @@ class SettingsWindow(QDialog):
         self._rendered_provider_id = ""
         self._provider_widgets: dict[str, Union[QLineEdit, QPlainTextEdit]] = {}
         self._provider_drafts: dict[str, dict[str, str]] = {}
+        self._resolved_theme = theme_controller().resolved
+        self._syncing_appearance = False
+        self._appearance_save_timer = QTimer(self)
+        self._appearance_save_timer.setSingleShot(True)
+        self._appearance_save_timer.setInterval(200)
+        self._appearance_save_timer.timeout.connect(self._commit_appearance)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -245,6 +256,61 @@ class SettingsWindow(QDialog):
         runtime_hint.setProperty("tone", "muted")
         runtime_hint.setStyleSheet("font-size: 12px;")
         runtime_layout.addWidget(runtime_hint)
+
+        appearance_card = QFrame()
+        appearance_card.setObjectName("settingsCard")
+        appearance_form = QFormLayout(appearance_card)
+        appearance_form.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
+        appearance_form.setHorizontalSpacing(16)
+        appearance_form.setVerticalSpacing(10)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("跟随系统", "system")
+        self.theme_combo.addItem("浅色", "light")
+        self.theme_combo.addItem("深色", "dark")
+        self.theme_combo.setToolTip(
+            "主题与调色盘会立即应用并保存，取消设置不会回滚主题外观"
+        )
+        appearance_form.addRow("外观主题", self.theme_combo)
+
+        accent_row = QWidget()
+        accent_layout = QHBoxLayout(accent_row)
+        accent_layout.setContentsMargins(0, 0, 0, 0)
+        accent_layout.setSpacing(8)
+        self.accent_color_edit = QLineEdit()
+        self.accent_color_edit.setPlaceholderText("#RRGGBB")
+        self.accent_color_edit.setMaxLength(7)
+        self.accent_color_edit.setToolTip("输入完整的十六进制主题主色")
+        self.accent_color_button = QPushButton()
+        self.accent_color_button.setFixedWidth(42)
+        self.accent_color_button.setToolTip("打开颜色选择器")
+        self.accent_color_button.setAccessibleName("选择主题主色")
+        accent_layout.addWidget(self.accent_color_edit, 1)
+        accent_layout.addWidget(self.accent_color_button)
+        appearance_form.addRow("主题主色", accent_row)
+
+        opacity_row = QWidget()
+        opacity_layout = QHBoxLayout(opacity_row)
+        opacity_layout.setContentsMargins(0, 0, 0, 0)
+        opacity_layout.setSpacing(10)
+        self.panel_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.panel_opacity_slider.setRange(70, 100)
+        self.panel_opacity_slider.setSingleStep(1)
+        self.panel_opacity_slider.setPageStep(5)
+        self.panel_opacity_slider.setToolTip("仅调整展开面板背景，不降低文字和控件清晰度")
+        self.panel_opacity_label = QLabel("100%")
+        self.panel_opacity_label.setFixedWidth(38)
+        self.panel_opacity_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        opacity_layout.addWidget(self.panel_opacity_slider, 1)
+        opacity_layout.addWidget(self.panel_opacity_label)
+        appearance_form.addRow("面板透明度", opacity_row)
+
+        self.reset_appearance_button = QPushButton("恢复当前主题默认配置")
+        self.reset_appearance_button.setToolTip("只重置当前解析出的浅色或深色主题")
+        appearance_form.addRow("", self.reset_appearance_button)
+        runtime_layout.addWidget(appearance_card)
+
         runtime_card = QFrame()
         runtime_card.setObjectName("settingsCard")
         runtime_layout.addWidget(runtime_card)
@@ -275,12 +341,6 @@ class SettingsWindow(QDialog):
             "界面展示最近 N 天分时估算数据；本地数据保留双倍宽限期，超过 2N 天后才自动清理"
         )
         runtime_form.addRow("分时数据保存天数", self.minute_usage_retention_days)
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItem("跟随系统", "system")
-        self.theme_combo.addItem("浅色", "light")
-        self.theme_combo.addItem("深色", "dark")
-        self.theme_combo.setToolTip("主题会立即应用并保存，取消设置不会回滚主题")
-        runtime_form.addRow("外观主题", self.theme_combo)
         self.edge_hide_check = QCheckBox("贴边自动隐藏")
         self.edge_hide_check.setToolTip("拖拽悬浮球到屏幕边缘后自动隐藏，鼠标移入时显示")
         runtime_form.addRow("贴边隐藏", self.edge_hide_check)
@@ -393,6 +453,11 @@ class SettingsWindow(QDialog):
         self.tabs.currentChanged.connect(lambda _index: self._sync_window_size())
         self._load_values()
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+        self.accent_color_edit.textChanged.connect(self._on_appearance_edited)
+        self.accent_color_edit.editingFinished.connect(self._finish_accent_edit)
+        self.accent_color_button.clicked.connect(self._choose_accent_color)
+        self.panel_opacity_slider.valueChanged.connect(self._on_appearance_edited)
+        self.reset_appearance_button.clicked.connect(self._reset_appearance)
         theme_controller().changed.connect(self._on_theme_state_changed)
         self._bind_update_controller()
         self._sync_window_size()
@@ -454,21 +519,109 @@ class SettingsWindow(QDialog):
             editor.setEnabled(enabled)
 
     def _on_theme_changed(self, _index: int) -> None:
+        if self._appearance_save_timer.isActive():
+            self._commit_appearance()
         mode = str(self.theme_combo.currentData() or "dark")
         self.theme_requested.emit(mode)
 
-    def _on_theme_state_changed(self, mode: str, _resolved: str) -> None:
-        self.set_theme_mode(mode)
+    def _on_theme_state_changed(self, mode: str, resolved: str) -> None:
+        self.set_theme_mode(mode, resolved)
 
-    def set_theme_mode(self, mode: str) -> None:
+    def set_theme_mode(self, mode: str, resolved: str | None = None) -> None:
         """Synchronize the selector without requesting the same change again."""
 
+        if resolved in {"light", "dark"}:
+            self._resolved_theme = resolved
         index = self.theme_combo.findData(mode)
         if index < 0:
             index = self.theme_combo.findData("dark")
         blocker = QSignalBlocker(self.theme_combo)
         self.theme_combo.setCurrentIndex(index)
         del blocker
+        self._set_appearance_controls(self._resolved_theme)
+
+    def _set_appearance_controls(
+        self,
+        theme_name: str,
+        color: str | None = None,
+        opacity: int | None = None,
+    ) -> None:
+        if color is None or opacity is None:
+            color, opacity = theme_controller().appearance(theme_name)
+        normalized = QColor(color).name(QColor.NameFormat.HexRgb).upper()
+        self._syncing_appearance = True
+        try:
+            color_blocker = QSignalBlocker(self.accent_color_edit)
+            opacity_blocker = QSignalBlocker(self.panel_opacity_slider)
+            self.accent_color_edit.setText(normalized)
+            self.panel_opacity_slider.setValue(int(opacity))
+            del color_blocker, opacity_blocker
+            self.panel_opacity_label.setText(f"{int(opacity)}%")
+            self._refresh_accent_swatch(normalized)
+        finally:
+            self._syncing_appearance = False
+
+    @staticmethod
+    def _valid_accent_color(value: str) -> bool:
+        return re.fullmatch(r"#[0-9A-Fa-f]{6}", value.strip()) is not None
+
+    def _refresh_accent_swatch(self, color: str) -> None:
+        self.accent_color_button.setStyleSheet(
+            f"background-color: {color}; border: 1px solid palette(mid);"
+        )
+
+    def _on_appearance_edited(self, _value=None) -> None:
+        self.panel_opacity_label.setText(f"{self.panel_opacity_slider.value()}%")
+        if self._syncing_appearance:
+            return
+        color = self.accent_color_edit.text().strip()
+        if not self._valid_accent_color(color):
+            return
+        normalized = color.upper()
+        self._refresh_accent_swatch(normalized)
+        opacity = self.panel_opacity_slider.value()
+        self.appearance_preview_requested.emit(
+            self._resolved_theme, normalized, opacity
+        )
+        # 拖动滑块时先连续预览，停顿后再写盘，避免高频替换配置文件。
+        self._appearance_save_timer.start()
+
+    def _finish_accent_edit(self) -> None:
+        if not self._valid_accent_color(self.accent_color_edit.text()):
+            self._appearance_save_timer.stop()
+            self._set_appearance_controls(self._resolved_theme)
+            self.set_theme_feedback("请输入 #RRGGBB 格式的主题色。", "danger")
+            return
+        self._commit_appearance()
+
+    def _commit_appearance(self) -> None:
+        self._appearance_save_timer.stop()
+        color = self.accent_color_edit.text().strip().upper()
+        if not self._valid_accent_color(color):
+            return
+        self.appearance_requested.emit(
+            self._resolved_theme,
+            color,
+            self.panel_opacity_slider.value(),
+        )
+
+    def _choose_accent_color(self) -> None:
+        initial = QColor(self.accent_color_edit.text().strip())
+        selected = QColorDialog.getColor(initial, self, "选择主题主色")
+        if not selected.isValid():
+            return
+        self.accent_color_edit.setText(
+            selected.name(QColor.NameFormat.HexRgb).upper()
+        )
+        self._commit_appearance()
+
+    def _reset_appearance(self) -> None:
+        base = LIGHT_THEME if self._resolved_theme == "light" else DARK_THEME
+        self._set_appearance_controls(self._resolved_theme, base.accent, 100)
+        self.appearance_preview_requested.emit(
+            self._resolved_theme, base.accent, 100
+        )
+        self.appearance_requested.emit(self._resolved_theme, base.accent, 100)
 
     def set_theme_feedback(self, message: str, tone: str = "muted") -> None:
         self._set_feedback(self.save_feedback, message, tone)
@@ -821,7 +974,17 @@ class SettingsWindow(QDialog):
         self.minute_usage_retention_days.setValue(
             int(values.get("MINUTE_USAGE_RETENTION_DAYS", 3))
         )
-        self.set_theme_mode(str(values.get("UI_THEME", "dark")))
+        self.set_theme_mode(
+            str(values.get("UI_THEME", "dark")), theme_controller().resolved
+        )
+        color_key = f"UI_{self._resolved_theme.upper()}_ACCENT_COLOR"
+        opacity_key = f"UI_{self._resolved_theme.upper()}_PANEL_OPACITY"
+        base = LIGHT_THEME if self._resolved_theme == "light" else DARK_THEME
+        self._set_appearance_controls(
+            self._resolved_theme,
+            str(values.get(color_key, base.accent)),
+            int(values.get(opacity_key, 100)),
+        )
         self.edge_hide_check.setChecked(bool(values.get("EDGE_HIDE_ENABLED", True)))
         self.panel_auto_collapse_check.setChecked(
             bool(values.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))

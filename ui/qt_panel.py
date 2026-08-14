@@ -26,6 +26,7 @@ from PySide6.QtGui import (
     QIcon,
     QKeySequence,
     QPainter,
+    QPalette,
     QPen,
     QPixmap,
     QRegion,
@@ -60,7 +61,12 @@ from core.identity import APP_DISPLAY_NAME
 from data.store import TokenData
 from ui.activity import compact_tokens
 from ui.qt_heatmap import TokenActivityHeatmap
-from ui.qt_theme import app_icon, current_theme, fluent_icon, theme_controller
+from ui.qt_theme import (
+    app_icon,
+    current_theme,
+    fluent_icon,
+    theme_controller,
+)
 
 
 PANEL_MIN_WIDTH = 640
@@ -75,6 +81,19 @@ STATISTICS_SECTION_HEIGHT = 76
 STATUS_SECTION_HEIGHT = 40
 SECTION_SPACING = 0
 SECTION_HORIZONTAL_MARGIN = 22
+
+
+def _make_plot_background_transparent(plot: pg.PlotWidget) -> None:
+    """Let the shared translucent panel surface show through pyqtgraph views."""
+    plot.setBackground(None)
+    palette = plot.palette()
+    transparent = QColor(0, 0, 0, 0)
+    # QGraphicsView 会在场景画刷之外继续填充 Base/Window；两层都清空才能避免
+    # 透明面板上出现不透明的浅色或黑色矩形。
+    palette.setColor(QPalette.ColorRole.Base, transparent)
+    palette.setColor(QPalette.ColorRole.Window, transparent)
+    plot.setPalette(palette)
+    plot.viewport().setPalette(palette)
 
 
 def _currency_prefix(currency: str) -> str:
@@ -268,7 +287,7 @@ class MinuteCalendarWidget(QCalendarWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(tokens.accent))
             painter.drawRoundedRect(cell, 6, 6)
-            text_color = QColor("#FFFFFF")
+            text_color = QColor(tokens.on_accent)
         else:
             if today:
                 painter.setPen(QPen(QColor(tokens.accent), 1))
@@ -985,7 +1004,7 @@ class TrendCard(QFrame):
         tokens = current_theme()
         # The selected layout is one continuous surface; the chart must not
         # introduce a nested rectangular card behind the bars.
-        self.plot.setBackground(tokens.window)
+        _make_plot_background_transparent(self.plot)
         left_axis = self.plot.getAxis("left")
         bottom_axis = self.plot.getAxis("bottom")
         left_axis.setTextPen(pg.mkPen(tokens.subtext))
@@ -1592,7 +1611,7 @@ class MinuteUsageChart(QWidget):
     def refresh_theme(self) -> None:
         tokens = current_theme()
         for widget in (self.plot, self.navigator):
-            widget.setBackground(tokens.window)
+            _make_plot_background_transparent(widget)
             for axis_name in ("left", "bottom"):
                 axis = widget.getAxis(axis_name)
                 axis.setTextPen(pg.mkPen(tokens.subtext))

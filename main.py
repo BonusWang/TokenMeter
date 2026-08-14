@@ -62,7 +62,14 @@ class App:
         self.qt_app = instance if isinstance(instance, QApplication) else QApplication(sys.argv)
         self.qt_app.setQuitOnLastWindowClosed(False)
         self.qt_app.setApplicationName(APP_DISPLAY_NAME)
-        configure_theme(self.qt_app, config_manager.get("UI_THEME", "dark"))
+        configure_theme(
+            self.qt_app,
+            config_manager.get("UI_THEME", "dark"),
+            light_accent=config_manager.get("UI_LIGHT_ACCENT_COLOR", "#2F72E8"),
+            dark_accent=config_manager.get("UI_DARK_ACCENT_COLOR", "#3478F6"),
+            light_panel_opacity=config_manager.get("UI_LIGHT_PANEL_OPACITY", 100),
+            dark_panel_opacity=config_manager.get("UI_DARK_PANEL_OPACITY", 100),
+        )
         self.qt_app.setWindowIcon(app_icon(64))
         self.widget = FloatingWidget(tray_icon=None)
         self.tray = SystemTray(self)

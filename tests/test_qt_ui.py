@@ -56,7 +56,7 @@ from ui.qt_panel import (
     format_token_axis,
 )
 from ui.qt_settings import SettingsWindow
-from ui.qt_theme import configure_theme, current_theme
+from ui.qt_theme import DARK_THEME, LIGHT_THEME, configure_theme, current_theme
 from ui.qt_update import AppUpdateController, UpdatePromptDialog
 from ui.qt_widget import FloatingWidget
 
@@ -174,6 +174,55 @@ def test_trend_uses_exactly_seven_cost_bars_with_hover_tooltip():
     assert show_tooltip.call_count == 1
     assert show_tooltip.call_args.args[1] == trend.tooltip_text(0)
     trend.close()
+
+
+def test_custom_accent_updates_trend_and_minute_bar_and_line_series():
+    controller = configure_theme(APP, "dark")
+    controller.set_appearance("dark", "#D14C2F", 82)
+    trend = TrendCard()
+    minute = MinuteUsageChart()
+    rows = [
+        {
+            "minute": 600,
+            "token_type": "PROMPT_CACHE_MISS_TOKEN",
+            "token_amount": 10,
+        }
+    ]
+    try:
+        trend.set_rows(sample_data().daily_usage, date.today())
+        assert trend._series.opts["brush"].color().name().upper() == "#D14C2F"
+
+        minute.set_rows(rows, "recorded", chart_type="bar")
+        bar = minute._bars["PROMPT_CACHE_MISS_TOKEN"]
+        assert bar.opts["brush"].color().name().upper() == "#D14C2F"
+
+        minute.set_rows(rows, "recorded", chart_type="line")
+        line = minute._lines["PROMPT_CACHE_MISS_TOKEN"]
+        assert line.opts["pen"].color().name().upper() == "#D14C2F"
+    finally:
+        controller.set_appearance("dark", DARK_THEME.accent, 100)
+        minute.close()
+        trend.close()
+
+
+def test_chart_canvases_inherit_translucent_panel_background():
+    controller = configure_theme(APP, "light")
+    controller.set_appearance("light", "#E986A1", 70)
+    trend = TrendCard()
+    minute = MinuteUsageChart()
+    try:
+        trend.refresh_theme()
+        minute.refresh_theme()
+
+        for plot in (trend.plot, minute.plot, minute.navigator):
+            assert plot.backgroundBrush().style() == Qt.BrushStyle.NoBrush
+            assert plot.palette().base().color().alpha() == 0
+            assert plot.viewport().palette().base().color().alpha() == 0
+    finally:
+        controller.set_appearance("light", LIGHT_THEME.accent, 100)
+        controller.set_mode("dark")
+        minute.close()
+        trend.close()
 
 
 def test_money_axis_and_zero_cost_range_remain_readable():
@@ -1463,7 +1512,7 @@ def test_existing_panel_switches_light_and_dark_without_refetching_or_rebinding_
     panel.show()
     APP.processEvents()
     panel_identity = id(panel)
-    dark_background = panel.trend.plot.backgroundBrush().color()
+    dark_axis_color = panel.trend.plot.getAxis("left").textPen().color()
 
     try:
         with (
@@ -1474,18 +1523,20 @@ def test_existing_panel_switches_light_and_dark_without_refetching_or_rebinding_
         ):
             controller.set_mode("light")
             APP.processEvents()
-            light_background = panel.trend.plot.backgroundBrush().color()
+            light_axis_color = panel.trend.plot.getAxis("left").textPen().color()
 
             assert id(panel) == panel_identity
             assert panel._resolved_theme == "light"
             assert current_theme().name == "light"
-            assert light_background.name() == current_theme().window.lower()
-            assert light_background != dark_background
+            assert panel.trend.plot.backgroundBrush().style() == Qt.BrushStyle.NoBrush
+            assert panel.trend.plot.palette().base().color().alpha() == 0
+            assert light_axis_color.name() == current_theme().subtext.lower()
+            assert light_axis_color != dark_axis_color
 
             controller.set_mode("dark")
             APP.processEvents()
             assert panel._resolved_theme == "dark"
-            assert panel.trend.plot.backgroundBrush().color() == dark_background
+            assert panel.trend.plot.getAxis("left").textPen().color() == dark_axis_color
             update_data.assert_not_called()
             set_rows.assert_not_called()
             set_activity.assert_not_called()
@@ -2120,6 +2171,25 @@ def test_codex_water_ball_renders_quota_level_in_dark_and_light_themes():
         ball.close()
 
 
+def test_codex_water_ball_uses_custom_accent_for_water_and_border():
+    controller = configure_theme(APP, "dark")
+    controller.set_appearance("dark", "#D14C2F", 100)
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(72, "2 天后重置", "周额度")
+    ball.show()
+    APP.processEvents()
+    try:
+        image = ball.grab().toImage()
+        water = image.pixelColor(44, 68)
+        border = image.pixelColor(44, 2)
+
+        assert water.red() > water.blue()
+        assert border.red() > border.blue()
+    finally:
+        controller.set_appearance("dark", DARK_THEME.accent, 100)
+        ball.close()
+
+
 def test_codex_water_ball_pointer_impulse_propagates_and_settles():
     ball = FloatingUsageBall(88)
     ball.set_quota_state(50, "2 小时后重置")
@@ -2700,6 +2770,42 @@ def test_settings_theme_selector_emits_all_modes_immediately_and_cancel_does_not
     assert window.theme_combo.currentData() == "light"
     assert requested == emitted_before_cancel
     assert "取消设置不会回滚主题" in window.theme_combo.toolTip()
+    window.close()
+
+
+def test_settings_theme_palette_previews_saves_and_resets_current_resolved_theme():
+    values = {
+        **config_manager.all_config(),
+        "UI_THEME": "dark",
+        "UI_DARK_ACCENT_COLOR": "#3478F6",
+        "UI_DARK_PANEL_OPACITY": 100,
+    }
+    with (
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+    ):
+        window = SettingsWindow()
+
+    previews: list[tuple[str, str, int]] = []
+    saves: list[tuple[str, str, int]] = []
+    window.appearance_preview_requested.connect(
+        lambda theme, color, opacity: previews.append((theme, color, opacity))
+    )
+    window.appearance_requested.connect(
+        lambda theme, color, opacity: saves.append((theme, color, opacity))
+    )
+
+    window.accent_color_edit.setText("#D14C2F")
+    window.panel_opacity_slider.setValue(82)
+    window._commit_appearance()
+
+    assert previews[-1] == ("dark", "#D14C2F", 82)
+    assert saves[-1] == ("dark", "#D14C2F", 82)
+    assert window.panel_opacity_label.text() == "82%"
+
+    window._reset_appearance()
+    assert previews[-1] == ("dark", DARK_THEME.accent, 100)
+    assert saves[-1] == ("dark", DARK_THEME.accent, 100)
     window.close()
 
 

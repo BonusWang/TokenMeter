@@ -17,7 +17,7 @@ from ui.activity import (
     compact_tokens,
     normalize_activity,
 )
-from ui.qt_theme import current_theme, theme_controller
+from ui.qt_theme import current_theme, panel_background, theme_controller
 
 
 class ActivityTooltip(QFrame):
@@ -134,9 +134,8 @@ class TokenActivityHeatmap(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        # Paint the single-surface panel color explicitly so a transparent
-        # scroll viewport cannot expose the desktop behind the heatmap.
-        painter.fillRect(self.rect(), QColor(theme.window))
+        # 仅降低面板底色透明度，格子、文字和悬停边框仍保持清晰可辨。
+        painter.fillRect(self.rect(), panel_background(theme.window, theme))
         self._hits = []
         vertical_step = self.CELL + self.GAP
         # Horizontal spacing expands with the card so the year stays readable

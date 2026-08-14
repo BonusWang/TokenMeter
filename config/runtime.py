@@ -502,3 +502,44 @@ def save_ui_theme(mode: str) -> str:
     _config = updated
     return normalized
 
+
+def save_ui_appearance(
+    theme_name: str, accent_color: str, panel_opacity: int
+) -> dict[str, Any]:
+    """Atomically persist the accent and panel opacity for one resolved theme."""
+    global _config
+    normalized_theme = str(theme_name).strip().lower()
+    if normalized_theme not in {"light", "dark"}:
+        raise ValueError("Resolved theme must be light or dark")
+    color_key = f"UI_{normalized_theme.upper()}_ACCENT_COLOR"
+    opacity_key = f"UI_{normalized_theme.upper()}_PANEL_OPACITY"
+    normalized_color = validate_value(color_key, accent_color)
+    normalized_opacity = validate_value(opacity_key, panel_opacity)
+    temp_path = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.appearance.tmp")
+    try:
+        if CONFIG_PATH.exists():
+            public_values = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if not isinstance(public_values, dict):
+                raise ValueError("config.json top level must be an object")
+        else:
+            public_values = _public_values(DEFAULT_CONFIG)
+
+        # 外观即时预览不能经过设置草稿，避免把尚未保存的凭据一并写入磁盘。
+        for key in SECRET_KEYS:
+            public_values.pop(key, None)
+        public_values["credential_store"] = "windows-credential-manager"
+        public_values[color_key] = normalized_color
+        public_values[opacity_key] = normalized_opacity
+        _write_json(temp_path, public_values)
+        temp_path.replace(CONFIG_PATH)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        logger().exception("Theme appearance could not be saved")
+        raise
+
+    updated = _config.copy()
+    updated[color_key] = normalized_color
+    updated[opacity_key] = normalized_opacity
+    _config = updated
+    return {color_key: normalized_color, opacity_key: normalized_opacity}
+

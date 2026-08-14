@@ -330,6 +330,65 @@ class FloatingWidget(QWidget):
         if self._settings_window is not None and self._settings_window.isVisible():
             self._settings_window.set_theme_feedback("主题已切换。", "success")
 
+    @Slot(str, str, int)
+    def _preview_appearance_change(
+        self, theme_name: str, accent_color: str, panel_opacity: int
+    ) -> None:
+        try:
+            theme_controller().set_appearance(
+                theme_name, accent_color, panel_opacity
+            )
+        except (TypeError, ValueError) as exc:
+            config_manager.logger().warning("Theme appearance preview rejected: %s", exc)
+            self._set_theme_feedback("主题外观预览失败，请检查输入。", "danger")
+
+    @Slot(str, str, int)
+    def _request_appearance_change(
+        self, theme_name: str, accent_color: str, panel_opacity: int
+    ) -> None:
+        controller = theme_controller()
+        normalized_theme = str(theme_name).strip().lower()
+        color_key = f"UI_{normalized_theme.upper()}_ACCENT_COLOR"
+        opacity_key = f"UI_{normalized_theme.upper()}_PANEL_OPACITY"
+        previous_appearance = controller.appearance(normalized_theme)
+        previous_color = str(
+            config_manager.get(color_key, previous_appearance[0])
+        )
+        previous_opacity = int(
+            config_manager.get(opacity_key, previous_appearance[1])
+        )
+        saved = False
+        try:
+            config_manager.save_ui_appearance(
+                normalized_theme, accent_color, panel_opacity
+            )
+            saved = True
+            controller.set_appearance(
+                normalized_theme, accent_color, panel_opacity
+            )
+        except Exception as exc:
+            if saved:
+                try:
+                    config_manager.save_ui_appearance(
+                        normalized_theme, previous_color, previous_opacity
+                    )
+                except Exception:
+                    config_manager.logger().exception(
+                        "Theme appearance rollback persistence failed"
+                    )
+            try:
+                controller.set_appearance(
+                    normalized_theme, previous_color, previous_opacity
+                )
+            except Exception:
+                config_manager.logger().exception("Theme appearance rollback failed")
+            config_manager.logger().exception("Theme appearance change failed: %s", exc)
+            self._sync_theme_controls(controller.mode, controller.resolved)
+            self._set_theme_feedback("主题外观保存失败，已恢复原设置。", "danger")
+            return
+        self._sync_theme_controls(controller.mode, controller.resolved)
+        self._set_theme_feedback("主题外观已保存。", "success")
+
     def _on_theme_state_changed(self, mode: str, resolved: str) -> None:
         self._sync_theme_controls(mode, resolved)
 
@@ -341,7 +400,7 @@ class FloatingWidget(QWidget):
             # 关闭竞态或嵌入调用方可能暂时挂接普通 QDialog；主题广播不能因此中断。
             sync_settings = getattr(self._settings_window, "set_theme_mode", None)
             if callable(sync_settings):
-                sync_settings(mode)
+                sync_settings(mode, resolved)
 
     def _set_theme_feedback(self, message: str, tone: str) -> None:
         panel_feedback = getattr(self.panel, "set_theme_feedback", None)
@@ -854,8 +913,14 @@ class FloatingWidget(QWidget):
                 update_controller=self._update_controller,
             )
             self._settings_window.theme_requested.connect(self._request_theme_change)
+            self._settings_window.appearance_preview_requested.connect(
+                self._preview_appearance_change
+            )
+            self._settings_window.appearance_requested.connect(
+                self._request_appearance_change
+            )
             controller = theme_controller()
-            self._settings_window.set_theme_mode(controller.mode)
+            self._settings_window.set_theme_mode(controller.mode, controller.resolved)
             # 设置窗口作为普通对话框，不应继承主窗口的置顶标志；
             # 否则会和悬浮球一起把其它应用压在下面。
             self._settings_window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
