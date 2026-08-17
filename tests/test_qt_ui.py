@@ -2584,6 +2584,26 @@ def test_settings_keep_unsaved_provider_drafts_when_switching():
         window.close()
 
 
+def test_settings_loads_and_persists_background_provider_selection():
+    values = {
+        **config_manager.all_config(),
+        "ACTIVE_PROVIDER": "deepseek",
+        "BACKGROUND_PROVIDER_IDS": ["codex", "mimo"],
+    }
+    with (
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+    ):
+        window = SettingsWindow()
+        assert window.background_provider_checks["codex"].isChecked()
+        assert window.background_provider_checks["mimo"].isChecked()
+        assert not window.background_provider_checks["deepseek"].isChecked()
+
+        window.background_provider_checks["mimo"].setChecked(False)
+        assert window._values()["BACKGROUND_PROVIDER_IDS"] == ["codex"]
+        window.close()
+
+
 def test_settings_codex_home_uses_read_only_directory_picker():
     configured = r"C:\Users\example\.codex\auth.json"
     selected = r"D:\CodexData"

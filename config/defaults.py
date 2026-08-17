@@ -44,6 +44,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ACCENT_COLOR": "#2f6fe4",
     "TEXT_COLOR": "#edf4ff",
     "ACTIVE_PROVIDER": "deepseek",
+    "BACKGROUND_PROVIDER_IDS": [],
     "EDGE_HIDE_ENABLED": True,
     "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": True,
     "AUTO_START_ENABLED": False,
@@ -75,6 +76,10 @@ FIELD_META: dict[str, dict[str, Any]] = {
     "EDGE_HIDE_ENABLED": {"kind": "bool"},
     "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": {"kind": "bool"},
     "AUTO_START_ENABLED": {"kind": "bool"},
+    "BACKGROUND_PROVIDER_IDS": {
+        "kind": "provider_list",
+        "choices": ("deepseek", "mimo", "codex", "cursor", "nayuto"),
+    },
     "UI_THEME": {"kind": "choice", "choices": ("system", "light", "dark")},
     "UI_LIGHT_ACCENT_COLOR": {"kind": "color"},
     "UI_DARK_ACCENT_COLOR": {"kind": "color"},

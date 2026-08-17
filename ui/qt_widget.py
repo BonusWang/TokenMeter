@@ -1358,9 +1358,14 @@ class FloatingWidget(QWidget):
         active_provider = str(
             captured_config.get("ACTIVE_PROVIDER", "")
         ).strip().lower()
+        background_provider_ids = captured_config.get("BACKGROUND_PROVIDER_IDS", [])
+        if not background_provider_ids:
+            # 未显式勾选时只刷新当前来源，避免旧版本行为继续请求所有已配置账户。
+            return
+        configured_ids = set(configured_provider_ids(captured_config))
         now = time.monotonic()
-        for provider_id in configured_provider_ids(captured_config):
-            if provider_id == active_provider:
+        for provider_id in background_provider_ids:
+            if provider_id == active_provider or provider_id not in configured_ids:
                 continue
             last_started = self._provider_last_started.get(provider_id)
             if (

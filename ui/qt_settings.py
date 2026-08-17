@@ -342,6 +342,17 @@ class SettingsWindow(QDialog):
         self.refresh_seconds.setRange(5, 3600)
         self.refresh_seconds.setSuffix(" 秒")
         runtime_form.addRow("刷新间隔", self.refresh_seconds)
+        background_provider_widget = QWidget()
+        background_provider_layout = QHBoxLayout(background_provider_widget)
+        background_provider_layout.setContentsMargins(0, 0, 0, 0)
+        background_provider_layout.setSpacing(10)
+        self.background_provider_checks: dict[str, QCheckBox] = {}
+        for provider_id, provider_name in list_providers():
+            check = QCheckBox(provider_name)
+            check.setToolTip("勾选后，即使不是当前数据来源也会在后台定时获取")
+            self.background_provider_checks[provider_id] = check
+            background_provider_layout.addWidget(check)
+        runtime_form.addRow("同时获取", background_provider_widget)
         self.minute_usage_interval_minutes = QSpinBox()
         self.minute_usage_interval_minutes.setRange(1, 60)
         self.minute_usage_interval_minutes.setSuffix(" 分钟")
@@ -1071,6 +1082,9 @@ class SettingsWindow(QDialog):
         self.minute_usage_retention_days.setValue(
             int(values.get("MINUTE_USAGE_RETENTION_DAYS", 3))
         )
+        background_provider_ids = set(values.get("BACKGROUND_PROVIDER_IDS", []))
+        for provider_id, check in self.background_provider_checks.items():
+            check.setChecked(provider_id in background_provider_ids)
         self.set_theme_mode(
             str(values.get("UI_THEME", "dark")), theme_controller().resolved
         )
@@ -1160,6 +1174,11 @@ class SettingsWindow(QDialog):
             "MINUTE_USAGE_INTERVAL_MINUTES": self.minute_usage_interval_minutes.value(),
             "MINUTE_USAGE_RETENTION_DAYS": self.minute_usage_retention_days.value(),
             "ACTIVE_PROVIDER": str(self.provider_combo.currentData() or ""),
+            "BACKGROUND_PROVIDER_IDS": [
+                provider_id
+                for provider_id, check in self.background_provider_checks.items()
+                if check.isChecked()
+            ],
             "UI_THEME": str(self.theme_combo.currentData() or "dark"),
             "EDGE_HIDE_ENABLED": self.edge_hide_check.isChecked(),
             "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": self.panel_auto_collapse_check.isChecked(),

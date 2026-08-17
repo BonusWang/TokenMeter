@@ -58,6 +58,20 @@ def validate_value(key: str, value: Any) -> Any:
             choices = ", ".join(meta["choices"])
             raise ValueError(f"{key} must be one of: {choices}")
         return normalized
+    if kind == "provider_list":
+        if isinstance(value, str):
+            value = [item.strip() for item in value.split(",") if item.strip()]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{key} 必须是数据来源列表")
+        choices = set(meta["choices"])
+        normalized: list[str] = []
+        for item in value:
+            provider_id = str(item).strip().lower()
+            if provider_id not in choices:
+                raise ValueError(f"{key} 包含未知数据来源: {provider_id}")
+            if provider_id not in normalized:
+                normalized.append(provider_id)
+        return normalized
     if kind == "time":
         return parse_time_text(value).strftime("%H:%M")
     return str(value)

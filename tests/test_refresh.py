@@ -160,9 +160,13 @@ class RefreshTests(unittest.TestCase):
         self.assertTrue(task._lightweight)
         self.assertEqual(task._config["ACTIVE_PROVIDER"], "mimo")
 
-    def test_background_cycle_starts_every_configured_non_current_provider(self):
+    def test_background_cycle_starts_only_selected_configured_non_current_provider(self):
         widget = widget_stub()
-        config = {"ACTIVE_PROVIDER": "codex", "MARKER": "captured"}
+        config = {
+            "ACTIVE_PROVIDER": "codex",
+            "BACKGROUND_PROVIDER_IDS": ["deepseek", "codex", "nayuto"],
+            "MARKER": "captured",
+        }
         with (
             patch("ui.qt_widget.config_manager.all_config", return_value=config),
             patch(
@@ -173,10 +177,10 @@ class RefreshTests(unittest.TestCase):
         ):
             widget._periodic_background_refresh()
 
-        self.assertEqual(widget._thread_pool.start.call_count, 3)
+        self.assertEqual(widget._thread_pool.start.call_count, 2)
         tasks = [call.args[0] for call in widget._thread_pool.start.call_args_list]
         self.assertEqual(
-            [task.provider_id for task in tasks], ["deepseek", "mimo", "nayuto"]
+            [task.provider_id for task in tasks], ["deepseek", "nayuto"]
         )
         self.assertTrue(all(task._lightweight for task in tasks))
         self.assertTrue(all(task._config["MARKER"] == "captured" for task in tasks))
@@ -186,12 +190,29 @@ class RefreshTests(unittest.TestCase):
         with (
             patch(
                 "ui.qt_widget.config_manager.all_config",
-                return_value={"ACTIVE_PROVIDER": "codex"},
+                return_value={
+                    "ACTIVE_PROVIDER": "codex",
+                    "BACKGROUND_PROVIDER_IDS": ["mimo"],
+                },
             ),
             patch("ui.qt_widget.configured_provider_ids", return_value=["codex"]),
         ):
             widget._periodic_background_refresh()
 
+        widget._thread_pool.start.assert_not_called()
+
+    def test_background_cycle_defaults_to_current_provider_only(self):
+        widget = widget_stub()
+        with (
+            patch(
+                "ui.qt_widget.config_manager.all_config",
+                return_value={"ACTIVE_PROVIDER": "codex"},
+            ),
+            patch("ui.qt_widget.configured_provider_ids") as configured,
+        ):
+            widget._periodic_background_refresh()
+
+        configured.assert_not_called()
         widget._thread_pool.start.assert_not_called()
 
     def test_provider_level_in_flight_does_not_block_other_provider(self):
@@ -234,7 +255,10 @@ class RefreshTests(unittest.TestCase):
         with (
             patch(
                 "ui.qt_widget.config_manager.all_config",
-                return_value={"ACTIVE_PROVIDER": "codex"},
+                return_value={
+                    "ACTIVE_PROVIDER": "codex",
+                    "BACKGROUND_PROVIDER_IDS": ["mimo"],
+                },
             ),
             patch("ui.qt_widget.configured_provider_ids", return_value=["mimo", "codex"]),
         ):
