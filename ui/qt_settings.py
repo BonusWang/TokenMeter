@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
 from config import runtime as config_manager
-from core.autostart import AutostartError, set_autostart_enabled
+from core.autostart import AutostartError, sync_autostart
 from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from data.store import TokenData
 from ui.qt_theme import DARK_THEME, LIGHT_THEME, theme_controller
@@ -1275,19 +1275,19 @@ class SettingsWindow(QDialog):
         previous_autostart = bool(config_manager.get("AUTO_START_ENABLED", False))
         requested_autostart = bool(values.get("AUTO_START_ENABLED", False))
         autostart_changed = previous_autostart != requested_autostart
-        if autostart_changed:
-            try:
-                set_autostart_enabled(requested_autostart)
-            except AutostartError as exc:
-                self._set_feedback(self.save_feedback, f"开机自启设置失败：{exc}", "danger")
-                return
+        try:
+            # 启动项可能被系统或安全软件移除；每次保存都按当前偏好重新对账。
+            sync_autostart(requested_autostart)
+        except AutostartError as exc:
+            self._set_feedback(self.save_feedback, f"开机自启设置失败：{exc}", "danger")
+            return
         try:
             config_manager.save_config(values)
         except Exception as exc:
             if autostart_changed:
                 try:
                     # 配置未保存时恢复原启动行为，避免开关与持久化状态不一致。
-                    set_autostart_enabled(previous_autostart)
+                    sync_autostart(previous_autostart)
                 except AutostartError:
                     config_manager.logger().warning(
                         "Windows autostart state could not be rolled back"

@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (ROOT / "packaging" / "installer" / "TokenMeter.iss").read_text(encoding="utf-8")
 
@@ -27,7 +26,7 @@ def test_installer_creates_both_shortcuts_and_preserves_data():
     assert "{group}\\TokenMeter" in SCRIPT
     assert 'Name: "{app}\\data"' not in SCRIPT
     assert 'Excludes: "data\\*"' in SCRIPT
-    assert "[UninstallDelete]" not in SCRIPT
+    assert 'Type: files; Name: "{userstartup}\\TokenMeter.lnk"' in SCRIPT
 
 
 def test_installer_packages_the_complete_onedir_tree():
@@ -41,4 +40,3 @@ def test_silent_update_restarts_fixed_executable_without_touching_data():
     assert "Check: IsUpdateMode" in SCRIPT
     assert "Check: not IsUpdateMode" in SCRIPT
     assert 'Filename: "{app}\\{#MyAppExeName}"' in SCRIPT
-    assert "[UninstallDelete]" not in SCRIPT

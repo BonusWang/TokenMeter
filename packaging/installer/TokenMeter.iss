@@ -46,6 +46,9 @@ Name: "{userdesktop}\TokenMeter"; Filename: "{app}\{#MyAppExeName}"; WorkingDir:
 Name: "{group}\TokenMeter"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\卸载 TokenMeter"; Filename: "{uninstallexe}"
 
+[UninstallDelete]
+Type: files; Name: "{userstartup}\TokenMeter.lnk"
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Check: not IsUpdateMode
 ; 自动更新成功后只由安装器重启一次，避免主程序与外部更新进程重复启动。

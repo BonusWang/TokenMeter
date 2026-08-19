@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,16 @@ except ImportError:  # pragma: no cover - TokenMeter is currently distributed fo
 
 RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE_NAME = APP_DISPLAY_NAME
+STARTUP_SHORTCUT_NAME = f"{APP_DISPLAY_NAME}.lnk"
+_CREATE_SHORTCUT_SCRIPT = (
+    "$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut("
+    "$env:TOKENMETER_AUTOSTART_SHORTCUT); "
+    "$shortcut.TargetPath = $env:TOKENMETER_AUTOSTART_TARGET; "
+    "$shortcut.Arguments = $env:TOKENMETER_AUTOSTART_ARGUMENTS; "
+    "$shortcut.WorkingDirectory = $env:TOKENMETER_AUTOSTART_WORKDIR; "
+    "$shortcut.IconLocation = $env:TOKENMETER_AUTOSTART_TARGET; "
+    "$shortcut.Save()"
+)
 
 
 class AutostartError(RuntimeError):
@@ -54,30 +65,73 @@ def _read_run_value() -> str | None:
     return str(value)
 
 
-def is_autostart_enabled() -> bool:
-    """Return whether the Run entry points at this application build."""
-    return _read_run_value() == autostart_command()
+def _startup_shortcut_path() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        raise AutostartError("无法定位当前 Windows 用户的启动文件夹。")
+    return (
+        Path(appdata)
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+        / STARTUP_SHORTCUT_NAME
+    )
 
 
-def set_autostart_enabled(enabled: bool) -> None:
-    """Enable or disable startup for the current Windows user."""
+def _write_startup_shortcut(path: Path) -> None:
+    executable = Path(sys.executable).resolve(strict=False)
+    arguments = ""
+    working_dir = executable.parent
+    if not getattr(sys, "frozen", False):
+        main_script = Path(__file__).resolve().parents[1] / "main.py"
+        arguments = subprocess.list2cmdline([str(main_script)])
+        working_dir = main_script.parent
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "TOKENMETER_AUTOSTART_SHORTCUT": str(path),
+            "TOKENMETER_AUTOSTART_TARGET": str(executable),
+            "TOKENMETER_AUTOSTART_ARGUMENTS": arguments,
+            "TOKENMETER_AUTOSTART_WORKDIR": str(working_dir),
+        }
+    )
+    system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
+    powershell = (
+        system_root
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                str(powershell),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                _CREATE_SHORTCUT_SCRIPT,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=environment,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AutostartError("无法创建 Windows 开机自启快捷方式。") from exc
+
+
+def _delete_legacy_run_value() -> None:
     registry = _require_windows_registry()
-    expected = autostart_command()
-    current = _read_run_value()
-    if enabled and current == expected:
-        return
-    if not enabled and current is None:
+    if _read_run_value() is None:
         return
     try:
-        if enabled:
-            with registry.CreateKeyEx(
-                registry.HKEY_CURRENT_USER,
-                RUN_KEY_PATH,
-                0,
-                registry.KEY_SET_VALUE,
-            ) as key:
-                registry.SetValueEx(key, RUN_VALUE_NAME, 0, registry.REG_SZ, expected)
-            return
         with registry.OpenKey(
             registry.HKEY_CURRENT_USER,
             RUN_KEY_PATH,
@@ -86,10 +140,36 @@ def set_autostart_enabled(enabled: bool) -> None:
         ) as key:
             registry.DeleteValue(key, RUN_VALUE_NAME)
     except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise AutostartError("无法清理旧版 Windows 开机自启设置。") from exc
+
+
+def is_autostart_enabled() -> bool:
+    """Return whether a current or legacy per-user startup entry exists."""
+    _require_windows_registry()
+    return _startup_shortcut_path().is_file() or _read_run_value() == autostart_command()
+
+
+def set_autostart_enabled(enabled: bool) -> None:
+    """Enable or disable startup for the current Windows user."""
+    _require_windows_registry()
+    shortcut_path = _startup_shortcut_path()
+    try:
         if enabled:
-            raise AutostartError("无法写入 Windows 开机自启设置。") from None
+            if not shortcut_path.is_file():
+                # OEM 启动管理可能移走 Run 值；用户启动文件夹不受该兼容层影响。
+                _write_startup_shortcut(shortcut_path)
+            if not shortcut_path.is_file():
+                raise AutostartError("Windows 开机自启快捷方式创建后校验失败。")
+        else:
+            shortcut_path.unlink(missing_ok=True)
+            if shortcut_path.exists():
+                raise AutostartError("Windows 开机自启快捷方式删除后校验失败。")
     except OSError as exc:
         raise AutostartError("无法更新 Windows 开机自启设置。") from exc
+    # 清理旧 Run 值可以避免升级后启动两份进程；OEM 的禁用备份不参与登录启动。
+    _delete_legacy_run_value()
 
 
 def sync_autostart(enabled: bool) -> None:
@@ -103,6 +183,7 @@ __all__ = [
     "AutostartError",
     "RUN_KEY_PATH",
     "RUN_VALUE_NAME",
+    "STARTUP_SHORTCUT_NAME",
     "autostart_command",
     "is_autostart_enabled",
     "set_autostart_enabled",
