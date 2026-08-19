@@ -2969,6 +2969,14 @@ def test_codex_water_ball_idle_surface_wave_travels_horizontally_without_level_d
     ball.close()
 
 
+def test_codex_water_ball_idle_flow_gets_stronger_as_quota_decreases():
+    assert FloatingUsageBall._idle_flow_scale(0.10) > FloatingUsageBall._idle_flow_scale(0.50)
+    assert FloatingUsageBall._idle_flow_scale(0.50) > FloatingUsageBall._idle_flow_scale(1.0)
+    assert FloatingUsageBall._idle_flow_scale(0.33) == pytest.approx(2.005)
+    # 接近空额度时优先保护真实液位，不能继续无限放大波浪。
+    assert FloatingUsageBall._idle_flow_scale(0.01) < FloatingUsageBall._idle_flow_scale(0.10)
+
+
 @pytest.mark.parametrize("remaining", [98, 100])
 def test_codex_high_water_keeps_visible_travelling_surface_wave(remaining):
     ball = FloatingUsageBall(124)

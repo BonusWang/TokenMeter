@@ -438,6 +438,13 @@ class FloatingUsageBall(QWidget):
     def _high_level_factor(cls, ratio: float) -> float:
         return cls._smoothstep(HIGH_LEVEL_FLOW_START, 1.0, ratio)
 
+    @staticmethod
+    def _idle_flow_scale(ratio: float) -> float:
+        remaining_scale = 1.0 + (1.0 - ratio) * 1.5
+        # 极低水位仍需限制波幅，避免静止波越过球底后看起来像凭空增加了额度。
+        depth_scale = min(1.0, ratio / 0.06)
+        return remaining_scale * depth_scale
+
     @classmethod
     def _visual_surface_y(cls, inner: QRectF, ratio: float) -> float:
         actual_surface = inner.bottom() - inner.height() * ratio
@@ -734,12 +741,13 @@ class FloatingUsageBall(QWidget):
     ) -> tuple[QPainterPath, QPainterPath]:
         surface_scale = min(1.0, ratio / 0.16)
         physics_scale = surface_scale * (1 - self._high_level_factor(ratio) * 0.52)
+        idle_scale = self._idle_flow_scale(ratio)
         layer_scale = 0.62 if back_layer else 1.0
         layer_shift = -1.2 if back_layer else 0.6
         idle_offsets = self._idle_surface_offsets(rect, 0.72 if back_layer else 0.0)
         offsets = [
             height * rect.height() * layer_scale * physics_scale
-                + idle_offsets[index] * (0.76 if back_layer else 1.0) * surface_scale
+                + idle_offsets[index] * (0.76 if back_layer else 1.0) * idle_scale
             for index, height in enumerate(self._liquid_surface.heights)
         ]
         surface = self._smooth_surface_path(rect, surface_y + layer_shift, offsets)
@@ -757,10 +765,11 @@ class FloatingUsageBall(QWidget):
     ) -> QPainterPath:
         surface_scale = min(1.0, ratio / 0.16)
         physics_scale = surface_scale * (1 - self._high_level_factor(ratio) * 0.52)
+        idle_scale = self._idle_flow_scale(ratio)
         idle_offsets = self._idle_surface_offsets(rect, 1.1)
         offsets = [
             height * rect.height() * 0.68 * physics_scale
-            + idle_offsets[index] * 0.72 * surface_scale
+            + idle_offsets[index] * 0.72 * idle_scale
             for index, height in enumerate(self._liquid_surface.heights)
         ]
         return self._smooth_surface_path(rect, surface_y + 3.2, offsets)
