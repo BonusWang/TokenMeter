@@ -58,6 +58,7 @@ class LiquidSurfaceState:
         self.heights = [0.0] * node_count
         self.velocities = [0.0] * node_count
         self.idle_phase = 0.0
+        self.idle_speed = 1.0
         self.idle_weight = 1.0
         self.drag_tilt = 0.0
         self.vertical_compression = 0.0
@@ -66,6 +67,7 @@ class LiquidSurfaceState:
         self.heights[:] = [0.0] * self.node_count
         self.velocities[:] = [0.0] * self.node_count
         self.idle_phase = 0.0
+        self.idle_speed = 1.0
         self.idle_weight = 1.0
         self.drag_tilt = 0.0
         self.vertical_compression = 0.0
@@ -154,7 +156,7 @@ class LiquidSurfaceState:
 
     def step(self, elapsed_seconds: float) -> None:
         dt = max(0.001, min(0.05, elapsed_seconds))
-        self.idle_phase += dt
+        self.idle_phase += dt * self.idle_speed
         previous = list(self.heights)
         velocity_damping = math.exp(-DAMPING * dt)
         target_idle_weight = 1.0 if self.activity < 0.012 else IDLE_WEIGHT_ACTIVE
@@ -348,7 +350,10 @@ class FloatingUsageBall(QWidget):
         if remaining is None or remaining <= 0:
             # 空额度停止动画并清掉动量，避免下次恢复额度时复活旧余波。
             self._liquid_surface.reset()
+            self._liquid_surface.idle_speed = 0.0
             self._reset_internal_flow()
+        else:
+            self._liquid_surface.idle_speed = self._idle_flow_speed(remaining / 100)
         remaining_text = "未知" if remaining is None else f"{remaining:.0f}%"
         self.setAccessibleName("Codex 剩余额度")
         self.setAccessibleDescription(remaining_text)
@@ -440,10 +445,18 @@ class FloatingUsageBall(QWidget):
 
     @staticmethod
     def _idle_flow_scale(ratio: float) -> float:
+        if ratio <= 0:
+            return 0.0
         remaining_scale = 1.0 + (1.0 - ratio) * 1.5
         # 极低水位仍需限制波幅，避免静止波越过球底后看起来像凭空增加了额度。
         depth_scale = min(1.0, ratio / 0.06)
         return remaining_scale * depth_scale
+
+    @staticmethod
+    def _idle_flow_speed(ratio: float) -> float:
+        if ratio <= 0:
+            return 0.0
+        return 1.0 + (1.0 - ratio) * 2.25
 
     @classmethod
     def _visual_surface_y(cls, inner: QRectF, ratio: float) -> float:

@@ -2975,6 +2975,25 @@ def test_codex_water_ball_idle_flow_gets_stronger_as_quota_decreases():
     assert FloatingUsageBall._idle_flow_scale(0.33) == pytest.approx(2.005)
     # 接近空额度时优先保护真实液位，不能继续无限放大波浪。
     assert FloatingUsageBall._idle_flow_scale(0.01) < FloatingUsageBall._idle_flow_scale(0.10)
+    assert FloatingUsageBall._idle_flow_scale(0) == 0
+
+
+def test_codex_water_ball_idle_flow_gets_faster_as_quota_decreases():
+    ball = FloatingUsageBall(88)
+    ball.set_quota_state(33, "2 小时后重置")
+
+    assert FloatingUsageBall._idle_flow_speed(0.33) == pytest.approx(2.5075)
+    assert ball._liquid_surface.idle_speed == pytest.approx(2.5075)
+
+    initial_phase = ball._liquid_surface.idle_phase
+    ball._liquid_surface.step(0.04)
+    assert ball._liquid_surface.idle_phase - initial_phase == pytest.approx(0.1003)
+
+    ball.set_quota_state(0, "即将重置")
+    assert FloatingUsageBall._idle_flow_speed(0) == 0
+    assert ball._liquid_surface.idle_speed == 0
+    assert not ball._wave_timer.isActive()
+    ball.close()
 
 
 @pytest.mark.parametrize("remaining", [98, 100])
