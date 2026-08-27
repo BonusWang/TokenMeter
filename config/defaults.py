@@ -49,6 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": True,
     "AUTO_START_ENABLED": False,
     "UI_THEME": "dark",
+    "UI_LANGUAGE": "system",
     "UI_LIGHT_ACCENT_COLOR": "#2F72E8",
     "UI_DARK_ACCENT_COLOR": "#3478F6",
     "UI_CUSTOM_COLORS": [],
@@ -82,6 +83,9 @@ FIELD_META: dict[str, dict[str, Any]] = {
         "choices": ("deepseek", "mimo", "codex", "cursor", "nayuto"),
     },
     "UI_THEME": {"kind": "choice", "choices": ("system", "light", "dark")},
+    "UI_LANGUAGE": {
+        "kind": "choice", "choices": ("system", "zh-cn", "zh-tw", "en", "ja", "ko"),
+    },
     "UI_LIGHT_ACCENT_COLOR": {"kind": "color"},
     "UI_DARK_ACCENT_COLOR": {"kind": "color"},
     "UI_CUSTOM_COLORS": {"kind": "color_list"},

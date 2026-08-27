@@ -609,6 +609,8 @@ class TokenData:
                         str(item.get("title") or ""),
                         str(item.get("value") or ""),
                         str(item.get("detail") or ""),
+                        raw_value=item.get("raw_value") if type(item.get("raw_value")) is int else None,
+                        value_kind=str(item.get("value_kind") or ""),
                     )
                 )
             return result
@@ -739,11 +741,13 @@ class TokenData:
             return
         per = data.per_provider[0]
 
-        def metric_payload(metric: QuotaMetric) -> dict[str, str]:
+        def metric_payload(metric: QuotaMetric) -> dict[str, Any]:
             return {
                 "title": metric.title,
                 "value": metric.value,
                 "detail": metric.detail,
+                "raw_value": metric.raw_value,
+                "value_kind": metric.value_kind,
             }
 
         payload: dict[str, Any] = {

@@ -126,6 +126,12 @@ def load_public_config(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("config.json 顶层必须是对象")
     value.pop("credential_store", None)
+    if "UI_LANGUAGE" in value:
+        try:
+            value["UI_LANGUAGE"] = validate_value("UI_LANGUAGE", value["UI_LANGUAGE"])
+        except ValueError:
+            # 未知语言仅回退该偏好，不让它导致其他有效配置一起丢失。
+            value["UI_LANGUAGE"] = "system"
     compact_size = int(value.get("WIDGET_COMPACT_SIZE", 88))
     if compact_size < 88 or compact_size in (96, 108, 120):
         value["WIDGET_COMPACT_SIZE"] = 88

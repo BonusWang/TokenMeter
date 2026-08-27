@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+from PySide6.QtCore import QLibraryInfo
 
 a = Analysis(
     ["../../main.py"],
@@ -63,6 +65,15 @@ a.binaries = [
 a.datas = [
     item for item in a.datas if not item[0].replace("/", "\\").startswith(unused_qt_prefixes)
 ]
+# 标准按钮和颜色选择器也要跟随手动语言；发布包不能依赖开发机上的翻译文件。
+translations = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
+for language in ("en", "zh_CN", "zh_TW", "ja", "ko"):
+    filename = f"qtbase_{language}.qm"
+    source = translations / filename
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    a.datas.append((f"PySide6/translations/{filename}", str(source), "DATA"))
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

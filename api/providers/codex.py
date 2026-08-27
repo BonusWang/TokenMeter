@@ -333,11 +333,11 @@ class CodexProvider(Provider):
         peak_tokens = max((usage.peak_total for usage in usages), default=0)
         detail = "服务端统计暂不可用，当前显示本机 Codex 会话日志估算"
         statistics = (
-            QuotaMetric("累计 Token 数", self._compact_tokens(total_tokens), detail),
-            QuotaMetric("峰值 Token 数", self._compact_tokens(peak_tokens), detail),
-            QuotaMetric("最长任务时长", self._duration_text(longest_seconds), detail),
-            QuotaMetric("当前连续天数", f"{current_streak} 天", detail),
-            QuotaMetric("最长连续天数", f"{longest_streak} 天", detail),
+            QuotaMetric("累计 Token 数", self._compact_tokens(total_tokens), detail, total_tokens, "tokens"),
+            QuotaMetric("峰值 Token 数", self._compact_tokens(peak_tokens), detail, peak_tokens, "tokens"),
+            QuotaMetric("最长任务时长", self._duration_text(longest_seconds), detail, longest_seconds, "seconds"),
+            QuotaMetric("当前连续天数", f"{current_streak} 天", detail, current_streak, "days"),
+            QuotaMetric("最长连续天数", f"{longest_streak} 天", detail, longest_streak, "days"),
         )
         return tuple(sorted(daily.items())), statistics
 
@@ -502,26 +502,31 @@ class CodexProvider(Provider):
                 "累计 Token 数",
                 "--" if total_tokens is None else self._compact_tokens(total_tokens),
                 detail,
+                total_tokens, "tokens",
             ),
             QuotaMetric(
                 "峰值 Token 数",
                 "--" if peak_tokens is None else self._compact_tokens(peak_tokens),
                 detail,
+                peak_tokens, "tokens",
             ),
             QuotaMetric(
                 "最长任务时长",
                 "--" if longest_seconds is None else self._duration_text(longest_seconds),
                 detail,
+                longest_seconds, "seconds",
             ),
             QuotaMetric(
                 "当前连续天数",
                 "--" if current_streak is None else f"{current_streak} 天",
                 detail,
+                current_streak, "days",
             ),
             QuotaMetric(
                 "最长连续天数",
                 "--" if longest_streak is None else f"{longest_streak} 天",
                 detail,
+                longest_streak, "days",
             ),
         )
         return tuple(sorted(daily.items())), statistics

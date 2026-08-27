@@ -38,6 +38,7 @@ from ui.geometry import (
     compact_geometry,
     expanded_panel_geometry,
 )
+from ui.i18n import bind_text, tr
 from ui.qt_ball import FloatingUsageBall
 from ui.qt_theme import theme_controller
 from ui.qt_update import AppUpdateController
@@ -913,13 +914,13 @@ class FloatingWidget(QWidget):
 
     def contextMenuEvent(self, event) -> None:
         menu = QMenu(self)
-        toggle = QAction("展开/收起", menu)
+        toggle = bind_text(QAction(menu), "展开/收起")
         toggle.triggered.connect(self.toggle)
-        refresh = QAction("刷新", menu)
+        refresh = bind_text(QAction(menu), "刷新")
         refresh.triggered.connect(self.refresh)
-        settings = QAction("设置", menu)
+        settings = bind_text(QAction(menu), "设置")
         settings.triggered.connect(self.open_settings)
-        quit_action = QAction("退出", menu)
+        quit_action = bind_text(QAction(menu), "退出")
         quit_action.triggered.connect(self.close)
         menu.addActions((toggle, refresh, settings))
         menu.addSeparator()
@@ -1221,8 +1222,8 @@ class FloatingWidget(QWidget):
         else:
             message = f"{auth_error.message}\n点击此通知可打开对应平台设置。"
         tray.showMessage(
-            f"{APP_DISPLAY_NAME}：登录凭据已失效",
-            message,
+            tr(f"{APP_DISPLAY_NAME}：登录凭据已失效"),
+            tr(message),
             QSystemTrayIcon.MessageIcon.Warning,
             10_000,
         )
@@ -1271,8 +1272,8 @@ class FloatingWidget(QWidget):
             tray = getattr(self, "tray", None)
             if tray is not None:
                 tray.showMessage(
-                    f"{APP_DISPLAY_NAME}：MiMo 浏览器会话已验证",
-                    "网页会话仍有效；TokenMeter 将在 Cookie 直连失败时使用专用浏览器查询。",
+                    tr(f"{APP_DISPLAY_NAME}：MiMo 浏览器会话已验证"),
+                    tr("网页会话仍有效；TokenMeter 将在 Cookie 直连失败时使用专用浏览器查询。"),
                     QSystemTrayIcon.MessageIcon.Information,
                     10_000,
                 )
@@ -1293,8 +1294,8 @@ class FloatingWidget(QWidget):
         if tray is not None:
             self._auth_notified_providers.add("mimo")
             tray.showMessage(
-                f"{APP_DISPLAY_NAME}：MiMo 自动续期失败",
-                f"{message}\n点击此通知可手动重新获取 Cookie。",
+                tr(f"{APP_DISPLAY_NAME}：MiMo 自动续期失败"),
+                tr(f"{message}\n点击此通知可手动重新获取 Cookie。"),
                 QSystemTrayIcon.MessageIcon.Warning,
                 10_000,
             )
@@ -1430,9 +1431,9 @@ class FloatingWidget(QWidget):
             and self.tray is not None
         ):
             self.tray.showMessage(
-                f"{APP_DISPLAY_NAME}：DeepSeek 已进入高峰计价",
-                "当前所有计费项按平时价格 2 倍计费，"
-                f"本时段至 {current.next_boundary.strftime('%H:%M')}（北京时间）。",
+                tr(f"{APP_DISPLAY_NAME}：DeepSeek 已进入高峰计价"),
+                tr("当前所有计费项按平时价格 2 倍计费，"
+                f"本时段至 {current.next_boundary.strftime('%H:%M')}（北京时间）。"),
                 QSystemTrayIcon.MessageIcon.Warning,
                 10_000,
             )

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from config import runtime as config_manager
 from core.identity import APP_VERSION
+from ui.i18n import bind_text, tr
 from updater.client import (
     CheckResult,
     DownloadBundle,
@@ -95,7 +96,7 @@ class UpdatePromptDialog(QDialog):
     def __init__(self, release: ReleaseInfo, parent: QWidget | None = None):
         super().__init__(parent)
         self._action = self.ACTION_LATER
-        self.setWindowTitle("软件更新")
+        bind_text(self, "软件更新", method='setWindowTitle')
         self.setModal(True)
         self.resize(620, 520)
 
@@ -103,19 +104,19 @@ class UpdatePromptDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(12)
 
-        title = QLabel(f"发现新版本 v{release.version}")
+        title = bind_text(QLabel(), f"发现新版本 v{release.version}")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         root.addWidget(title)
 
         form = QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(8)
-        form.addRow("发布时间", QLabel(release_display_time(release.published_at)))
-        form.addRow("文件大小", QLabel(format_bytes(release.setup_asset.size)))
-        form.addRow("更新通道", QLabel("预发布版" if release.is_prerelease else "正式版"))
+        form.addRow(bind_text(QLabel(), "发布时间"), bind_text(QLabel(), release_display_time(release.published_at)))
+        form.addRow(bind_text(QLabel(), "文件大小"), bind_text(QLabel(), format_bytes(release.setup_asset.size)))
+        form.addRow(bind_text(QLabel(), "更新通道"), bind_text(QLabel(), "预发布版" if release.is_prerelease else "正式版"))
         root.addLayout(form)
 
-        notes_label = QLabel("更新说明")
+        notes_label = bind_text(QLabel(), "更新说明")
         notes_label.setStyleSheet("font-weight: 600;")
         root.addWidget(notes_label)
 
@@ -125,9 +126,9 @@ class UpdatePromptDialog(QDialog):
         root.addWidget(notes, 1)
 
         buttons = QDialogButtonBox()
-        later_button = buttons.addButton("稍后提醒", QDialogButtonBox.ButtonRole.RejectRole)
-        skip_button = buttons.addButton("跳过此版本", QDialogButtonBox.ButtonRole.DestructiveRole)
-        download_button = buttons.addButton("下载并更新", QDialogButtonBox.ButtonRole.AcceptRole)
+        later_button = bind_text(buttons.addButton('', QDialogButtonBox.ButtonRole.RejectRole), "稍后提醒")
+        skip_button = bind_text(buttons.addButton('', QDialogButtonBox.ButtonRole.DestructiveRole), "跳过此版本")
+        download_button = bind_text(buttons.addButton('', QDialogButtonBox.ButtonRole.AcceptRole), "下载并更新")
         later_button.clicked.connect(self._choose_later)
         skip_button.clicked.connect(self._choose_skip)
         download_button.clicked.connect(self._choose_download)
@@ -155,7 +156,7 @@ class DownloadProgressDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("下载更新")
+        bind_text(self, "下载更新", method='setWindowTitle')
         self.setModal(True)
         self.setMinimumWidth(480)
 
@@ -163,7 +164,7 @@ class DownloadProgressDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(12)
 
-        self.status_label = QLabel("正在准备下载…")
+        self.status_label = bind_text(QLabel(), "正在准备下载…")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
@@ -171,13 +172,13 @@ class DownloadProgressDialog(QDialog):
         self.progress_bar.setRange(0, 100)
         root.addWidget(self.progress_bar)
 
-        self.detail_label = QLabel("0 / 0")
+        self.detail_label = bind_text(QLabel(), "0 / 0")
         self.detail_label.setProperty("tone", "muted")
         root.addWidget(self.detail_label)
 
         actions = QHBoxLayout()
         actions.addStretch(1)
-        self.cancel_button = QPushButton("取消")
+        self.cancel_button = bind_text(QPushButton(), "取消")
         self.cancel_button.clicked.connect(self.cancelled.emit)
         actions.addWidget(self.cancel_button)
         root.addLayout(actions)
@@ -193,14 +194,12 @@ class DownloadProgressDialog(QDialog):
         percentage = 0 if total <= 0 else min(100, round(downloaded * 100 / total))
         self.progress_bar.setValue(percentage)
         if reused:
-            self.status_label.setText(f"已复用缓存文件：{stage}")
+            bind_text(self.status_label, f"已复用缓存文件：{stage}")
         else:
-            self.status_label.setText(f"正在下载：{stage}")
-        self.detail_label.setText(
-            f"{format_bytes(downloaded)} / {format_bytes(total)}"
+            bind_text(self.status_label, f"正在下载：{stage}")
+        bind_text(self.detail_label, f"{format_bytes(downloaded)} / {format_bytes(total)}"
             f"  当前文件：{format_bytes(current)} / {format_bytes(current_total)}"
-            f"  速度：{format_speed(speed)}"
-        )
+            f"  速度：{format_speed(speed)}")
 
 
 class AppUpdateController(QObject):
@@ -251,27 +250,27 @@ class AppUpdateController(QObject):
 
     def skip_available_version(self, parent: QWidget | None = None) -> None:
         if not self._latest_release:
-            QMessageBox.information(parent or self._owner, "软件更新", "当前没有可跳过的已知版本。")
+            QMessageBox.information(parent or self._owner, tr("软件更新"), tr("当前没有可跳过的已知版本。"))
             return
         mark_skipped_version(self._latest_release.version)
         self.status_changed.emit(self.status_text())
         QMessageBox.information(
             parent or self._owner,
-            "软件更新",
-            f"已跳过 v{self._latest_release.version}，后续自动检查不再重复提示。",
+            tr("软件更新"),
+            tr(f"已跳过 v{self._latest_release.version}，后续自动检查不再重复提示。"),
         )
 
     def check_for_updates(self, *, manual: bool, parent: QWidget | None = None) -> None:
         if self._check_worker and self._check_worker.isRunning():
             if manual:
-                QMessageBox.information(parent or self._owner, "软件更新", "正在检查更新，请稍候。")
+                QMessageBox.information(parent or self._owner, tr("软件更新"), tr("正在检查更新，请稍候。"))
             return
         if not is_packaged_windows_executable():
             if manual:
                 QMessageBox.information(
                     parent or self._owner,
-                    "软件更新",
-                    f"开发运行模式下不支持自更新，请使用打包后的 {MAIN_EXECUTABLE_NAME} 验证更新流程。",
+                    tr("软件更新"),
+                    tr(f"开发运行模式下不支持自更新，请使用打包后的 {MAIN_EXECUTABLE_NAME} 验证更新流程。"),
                 )
             return
         channel = str(config_manager.get("UPDATE_CHANNEL", "stable"))
@@ -294,7 +293,7 @@ class AppUpdateController(QObject):
         if error is not None:
             self.reload_cached_release()
             if manual:
-                QMessageBox.warning(parent or self._owner, "软件更新", str(error))
+                QMessageBox.warning(parent or self._owner, tr("软件更新"), tr(str(error)))
             return
 
         assert result is not None
@@ -303,7 +302,7 @@ class AppUpdateController(QObject):
         self.status_changed.emit(self.status_text())
         if not result.update_available or not result.latest_release:
             if manual:
-                QMessageBox.information(parent or self._owner, "软件更新", result.message)
+                QMessageBox.information(parent or self._owner, tr("软件更新"), tr(result.message))
             return
         if manual:
             self._prompt_for_release(result.latest_release, parent or self._owner)
@@ -327,7 +326,7 @@ class AppUpdateController(QObject):
 
     def download_release(self, release: ReleaseInfo, parent: QWidget | None = None) -> None:
         if self._download_worker and self._download_worker.isRunning():
-            QMessageBox.information(parent or self._owner, "软件更新", "当前已有下载任务正在进行。")
+            QMessageBox.information(parent or self._owner, tr("软件更新"), tr("当前已有下载任务正在进行。"))
             return
         self._progress_dialog = DownloadProgressDialog(parent or self._owner)
         self._download_worker = UpdateDownloadWorker(release)
@@ -354,7 +353,7 @@ class AppUpdateController(QObject):
             if isinstance(error, DownloadCancelled):
                 self.status_changed.emit("已取消更新下载")
                 return
-            QMessageBox.warning(parent, "软件更新", str(error))
+            QMessageBox.warning(parent, tr("软件更新"), tr(str(error)))
             self.status_changed.emit(self.status_text())
             return
 
@@ -362,7 +361,7 @@ class AppUpdateController(QObject):
         try:
             launch_installer(bundle)
         except Exception as exc:
-            QMessageBox.warning(parent, "软件更新", str(exc))
+            QMessageBox.warning(parent, tr("软件更新"), tr(str(exc)))
             self.status_changed.emit(self.status_text())
             return
         self.status_changed.emit("更新器已启动，正在关闭当前程序…")

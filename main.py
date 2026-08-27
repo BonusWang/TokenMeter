@@ -54,6 +54,7 @@ class App:
     def __init__(self):
         from PySide6.QtWidgets import QApplication
 
+        from ui.i18n import configure_language
         from ui.qt_theme import app_icon, configure_theme
         from ui.qt_tray import SystemTray
         from ui.qt_widget import FloatingWidget
@@ -62,6 +63,7 @@ class App:
         self.qt_app = instance if isinstance(instance, QApplication) else QApplication(sys.argv)
         self.qt_app.setQuitOnLastWindowClosed(False)
         self.qt_app.setApplicationName(APP_DISPLAY_NAME)
+        configure_language(self.qt_app, config_manager.get("UI_LANGUAGE", "system"))
         configure_theme(
             self.qt_app,
             config_manager.get("UI_THEME", "dark"),
@@ -89,7 +91,11 @@ class App:
 def main() -> int:
     instance_handle = _acquire_single_instance()
     if instance_handle is None:
-        ctypes.windll.user32.MessageBoxW(None, f"{APP_DISPLAY_NAME} 已在运行。", APP_DISPLAY_NAME, 0x40)
+        from ui.i18n import startup_running_message
+
+        # 重复启动只读语言偏好，不执行数据迁移、凭据初始化或启动项同步。
+        message = startup_running_message(APP_DISPLAY_NAME, config_manager.read_ui_language_preference())
+        ctypes.windll.user32.MessageBoxW(None, message, APP_DISPLAY_NAME, 0x40)
         return 0
     try:
         config_manager.initialize()

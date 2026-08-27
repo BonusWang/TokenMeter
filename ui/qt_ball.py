@@ -18,6 +18,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from ui.i18n import bind_text, tr
 from ui.qt_theme import DARK_THEME, LIGHT_THEME, current_theme, theme_controller
 
 logger = logging.getLogger(__name__)
@@ -799,9 +800,9 @@ class FloatingUsageBall(QWidget):
                 else self._idle_flow_speed(remaining / 100)
             )
         remaining_text = "未知" if remaining is None else f"{remaining:.0f}%"
-        self.setAccessibleName("Codex 剩余额度")
-        self.setAccessibleDescription(remaining_text)
-        self.setToolTip(remaining_text)
+        bind_text(self, "Codex 剩余额度", method='setAccessibleName')
+        bind_text(self, remaining_text, method='setAccessibleDescription')
+        bind_text(self, remaining_text, method='setToolTip')
         if self.isVisible():
             if remaining is not None and remaining > 0:
                 self._ensure_animation()
@@ -823,9 +824,9 @@ class FloatingUsageBall(QWidget):
         self._drag_last_velocity = QPointF()
         self._reset_container_motion()
         self._reset_internal_flow()
-        self.setAccessibleName("")
-        self.setAccessibleDescription("")
-        self.setToolTip("")
+        bind_text(self, "", method='setAccessibleName')
+        bind_text(self, "", method='setAccessibleDescription')
+        bind_text(self, "", method='setToolTip')
         self.update()
 
     def _ensure_animation(self) -> None:
@@ -1401,10 +1402,10 @@ class FloatingUsageBall(QWidget):
         painter.drawText(
             rect.translated(0, 1),
             Qt.AlignmentFlag.AlignCenter,
-            text,
+            tr(text),
         )
         painter.setPen(color)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, tr(text))
 
     def _quota_geometry(self, ball_radius: float) -> tuple[QRectF, QPainterPath]:
         key = round(ball_radius, 2)
@@ -1718,7 +1719,7 @@ class FloatingUsageBall(QWidget):
             painter.drawText(
                 QRectF(10, 18, side - 20, 18),
                 Qt.AlignmentFlag.AlignCenter,
-                self._primary_label,
+                tr(self._primary_label),
             )
 
             painter.setPen(QColor(theme.value))
@@ -1727,7 +1728,7 @@ class FloatingUsageBall(QWidget):
             painter.drawText(
                 QRectF(8, 34, side - 16, 25),
                 Qt.AlignmentFlag.AlignCenter,
-                self._today,
+                tr(self._today),
             )
 
             painter.setPen(QPen(QColor(theme.border), 1))
@@ -1737,7 +1738,7 @@ class FloatingUsageBall(QWidget):
             painter.drawText(
                 QRectF(10, 65, side - 20, 15),
                 Qt.AlignmentFlag.AlignCenter,
-                self._secondary_label,
+                tr(self._secondary_label),
             )
             painter.setPen(QColor(theme.accent_hover))
             balance_size = 11 if len(self._balance) <= 8 else 9
@@ -1747,7 +1748,7 @@ class FloatingUsageBall(QWidget):
             painter.drawText(
                 QRectF(14, 80, side - 28, 19),
                 Qt.AlignmentFlag.AlignCenter,
-                self._balance,
+                tr(self._balance),
             )
         painter.end()
         if profile_timer.isValid():

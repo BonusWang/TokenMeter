@@ -37,6 +37,7 @@ TokenMeter is a lightweight Windows desktop monitor for subscription quotas, tok
 - Codex, Cursor, DeepSeek, Xiaomi MiMo, and NayutoAI support with isolated per-provider caches; only the current provider refreshes by default, with optional background providers selected in Settings.
 - Floating widget and system tray with dragging, edge docking, position memory, and collapse on focus loss.
 - Light, dark, and Windows system themes.
+- The interface follows your system language, with Simplified Chinese, Traditional Chinese, English, Japanese, and Korean support. Switch instantly in Settings → Appearance → Language; your choice is remembered. Unsupported system languages fall back to English.
 - Balance, token usage, cost trends, model statistics, intraday charts, and an annual activity heatmap.
 - DeepSeek peak-pricing hints; MiMo Cookie collection and renewal through a dedicated Chrome profile.
 - Last successful data remains visible during network failures; history is cached in local SQLite.

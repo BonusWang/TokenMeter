@@ -70,6 +70,9 @@ class QuotaMetric:
     title: str
     value: str
     detail: str = ""
+    # 保留原格式化字段供旧调用方使用；界面切换单位时从原数值格式化，避免反推舍入值。
+    raw_value: int | None = None
+    value_kind: str = ""
 
 
 @dataclass(frozen=True)

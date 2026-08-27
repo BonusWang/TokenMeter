@@ -17,6 +17,7 @@ from ui.activity import (
     compact_tokens,
     normalize_activity,
 )
+from ui.i18n import bind_text, tr, ui_locale
 from ui.qt_theme import current_theme, panel_background, theme_controller
 
 
@@ -44,13 +45,13 @@ class ActivityTooltip(QFrame):
         self.update()
 
     def show_day(self, day: TokenActivityDay, anchor: QPoint) -> None:
-        self._title.setText(day.date.isoformat())
+        bind_text(self._title, day.date.isoformat())
         lines = [f"Token 使用量：{compact_tokens(day.token_count)}"]
         if day.amount is not None:
             lines.append(f"使用金额：¥{day.amount:.4f}".rstrip("0").rstrip("."))
         if day.request_count is not None:
             lines.append(f"请求次数：{day.request_count:,}")
-        self._body.setText("\n".join(lines))
+        bind_text(self._body, "\n".join(lines))
         self.adjustSize()
         parent_rect = self.parentWidget().rect()
         x = anchor.x() + 12
@@ -149,7 +150,7 @@ class TokenActivityHeatmap(QWidget):
         painter.setPen(QColor(theme.muted))
         for weekday, label in ((0, "一"), (2, "三"), (4, "五"), (6, "日")):
             y = self.TOP + weekday * vertical_step
-            painter.drawText(QRectF(0, y - 1, self.LEFT - 7, self.CELL + 2), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, label)
+            painter.drawText(QRectF(0, y - 1, self.LEFT - 7, self.CELL + 2), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, tr(label))
 
         last_label_right = -100
         current = self._period.start.replace(day=1)
@@ -158,10 +159,10 @@ class TokenActivityHeatmap(QWidget):
         while current <= self._period.end:
             week, _weekday = calendar_position(current, self._period.grid_start)
             x = self.LEFT + week * horizontal_step
-            label = f"{current.month}月"
+            label = ui_locale().monthName(current.month, ui_locale().FormatType.ShortFormat)
             width = painter.fontMetrics().horizontalAdvance(label)
             if x > last_label_right + 8:
-                painter.drawText(QRectF(x, 0, width + 5, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                painter.drawText(QRectF(x, 0, width + 5, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tr(label))
                 last_label_right = x + width
             current = (current + timedelta(days=32)).replace(day=1)
 

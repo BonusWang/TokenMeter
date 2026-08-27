@@ -471,6 +471,50 @@ def save_config(values: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
+def save_ui_language(language: str) -> str:
+    """Persist language without committing settings drafts or touching credentials."""
+    global _config
+    normalized = validate_value("UI_LANGUAGE", language)
+    temp_path = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.language.tmp")
+    try:
+        values = (
+            json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if CONFIG_PATH.exists() else _public_values(DEFAULT_CONFIG)
+        )
+        if not isinstance(values, dict):
+            raise ValueError("config.json top level must be an object")
+        # 语言是独立即时设置；从磁盘合并，不能保存界面中尚未提交的凭据草稿。
+        values = _public_values(values)
+        values["UI_LANGUAGE"] = normalized
+        _write_json(temp_path, values)
+        temp_path.replace(CONFIG_PATH)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    _config = {**_config, "UI_LANGUAGE": normalized}
+    return normalized
+
+
+def read_ui_language_preference() -> str:
+    """Read language for startup messages without initializing or migrating data."""
+    if _initialized:
+        return str(get("UI_LANGUAGE", "system"))
+    location = _load_location_state()
+    explicit = location.get("data_dir")
+    candidates = [Path(str(explicit)) / "config.json"] if explicit else []
+    if getattr(sys, "frozen", False):
+        candidates.append(app_dir() / "data" / "config.json")
+    candidates.extend((DEFAULT_CONFIG_DIR / "config.json", data_directory.local_fallback_data_dir() / "config.json"))
+    for path in candidates:
+        try:
+            values = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(values, dict):
+                return str(values.get("UI_LANGUAGE", "system"))
+        except (OSError, ValueError):
+            continue
+    return "system"
+
+
 def save_ui_theme(mode: str) -> str:
     """Atomically persist only the public theme preference."""
     global _config

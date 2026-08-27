@@ -7,8 +7,32 @@ from decimal import Decimal
 from math import ceil
 
 from ui.activity import compact_tokens
+from ui.i18n import current_language, tr
 
 _SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def format_quota_metric(metric) -> str:
+    if metric.raw_value is None or current_language() == "zh-cn":
+        return tr(metric.value)
+    value = metric.raw_value
+    if metric.value_kind == "tokens":
+        if current_language() == "en":
+            for scale, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+                if abs(value) >= scale:
+                    return f"{value / scale:.1f}".rstrip("0").rstrip(".") + suffix
+            return str(value)
+        return tr(format_codex_tokens(value))
+    if metric.value_kind == "days":
+        return tr("{n} 天", n=value)
+    if metric.value_kind == "seconds":
+        hours, remainder = divmod(max(0, value), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return (
+            tr("{hours}时 {minutes}分", hours=hours, minutes=minutes)
+            if hours else tr("{minutes}分 {seconds}秒", minutes=minutes, seconds=seconds)
+        )
+    return tr(metric.value)
 
 
 def _currency_prefix(currency: str) -> str:

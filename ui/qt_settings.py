@@ -47,6 +47,15 @@ from config import runtime as config_manager
 from core.autostart import AutostartError, sync_autostart
 from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from data.store import TokenData
+from ui.i18n import (
+    LANGUAGES,
+    add_item,
+    add_tab,
+    bind_text,
+    configure_language,
+    language_controller,
+    tr,
+)
 from ui.qt_theme import DARK_THEME, LIGHT_THEME, current_theme, fluent_icon, theme_controller
 from ui.qt_update import AppUpdateController
 
@@ -102,14 +111,14 @@ class _SettingsTabBar(QTabBar):
                     painter.setPen(QPen(QColor(tokens.accent), 1))
                     painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
             painter.setPen(QColor(tokens.accent_text if selected else tokens.subtext))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.tabText(index))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, tr(self.tabText(index)))
 
 
 class _SettingsSwitch(QCheckBox):
     def __init__(self, text: str):
         super().__init__(text)
         # 保留复选框的键盘和无障碍语义，仅把重复的二态控件绘制成开关。
-        self.setAccessibleName(text)
+        bind_text(self, text, method='setAccessibleName')
         self.setFixedSize(50, 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -222,7 +231,7 @@ class SettingsWindow(QDialog):
     ):
         super().__init__(parent)
         self.setObjectName("settingsPage")
-        self.setWindowTitle(f"{APP_DISPLAY_NAME} 设置")
+        bind_text(self, f"{APP_DISPLAY_NAME} 设置", method='setWindowTitle')
         self.setModal(False)
         if embedded:
             # 在主面板内作为普通控件显示，避免生成继承悬浮球置顶状态的独立窗口。
@@ -258,7 +267,7 @@ class SettingsWindow(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 14, 24, 18)
         root.setSpacing(8)
-        self.save_feedback = QLabel("自动保存", self)
+        self.save_feedback = bind_text(QLabel(self), "自动保存")
         self.save_feedback.setObjectName("settingsSaveStatus")
         self.save_feedback.setMaximumWidth(260)
         self.save_feedback.setProperty("tone", "muted")
@@ -282,7 +291,7 @@ class SettingsWindow(QDialog):
         content_layout = QVBoxLayout(self.content)
         content_layout.setContentsMargins(0, 20, 0, 8)
         content_layout.setSpacing(14)
-        title = QLabel("连接数据平台；凭据仅保存在本机，修改后自动保存。")
+        title = bind_text(QLabel(), "连接数据平台；凭据仅保存在本机，修改后自动保存。")
         title.setProperty("tone", "muted")
         title.setWordWrap(True)
 
@@ -290,7 +299,7 @@ class SettingsWindow(QDialog):
         picker_row = QHBoxLayout()
         picker_row.setContentsMargins(0, 0, 0, 0)
         picker_row.setSpacing(8)
-        picker_label = QLabel("数据来源")
+        picker_label = bind_text(QLabel(), "数据来源")
         picker_label.setStyleSheet("font-size: 13px; font-weight: 500;")
         self.provider_combo = _SettingsComboBox()
         for provider_id, provider_name in list_providers():
@@ -299,7 +308,7 @@ class SettingsWindow(QDialog):
                 if provider_id == "nayuto"
                 else f"{provider_name} ({provider_id})"
             )
-            self.provider_combo.addItem(display_name, provider_id)
+            add_item(self.provider_combo, display_name, provider_id)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         picker_row.addWidget(picker_label)
         picker_row.addWidget(self.provider_combo, 1)
@@ -313,7 +322,7 @@ class SettingsWindow(QDialog):
         self._provider_widgets: dict[str, QLineEdit] = {}
 
         connection_actions = QHBoxLayout()
-        self.test_button = QPushButton("测试连接")
+        self.test_button = bind_text(QPushButton(), "测试连接")
         self.test_button.clicked.connect(self._test_connection)
         connection_actions.addWidget(self.test_button)
         connection_actions.addStretch(1)
@@ -331,10 +340,10 @@ class SettingsWindow(QDialog):
         peak_layout = QVBoxLayout(self.deepseek_peak_pricing_card)
         peak_layout.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
         peak_layout.setSpacing(9)
-        peak_title = QLabel("峰谷计价提示")
+        peak_title = bind_text(QLabel(), "峰谷计价提示")
         peak_title.setStyleSheet("font-size: 14px; font-weight: 600;")
         peak_layout.addWidget(peak_title)
-        self.deepseek_peak_pricing_enabled = QCheckBox("显示峰谷计价状态")
+        self.deepseek_peak_pricing_enabled = bind_text(QCheckBox(), "显示峰谷计价状态")
         self.deepseek_peak_pricing_enabled.toggled.connect(
             self._set_peak_pricing_inputs_enabled
         )
@@ -347,19 +356,19 @@ class SettingsWindow(QDialog):
         self.deepseek_peak_period_2_start = self._peak_time_edit()
         self.deepseek_peak_period_2_end = self._peak_time_edit()
         peak_form.addRow(
-            "高峰时段 1",
+            bind_text(QLabel(), "高峰时段 1"),
             self._peak_period_row(
                 self.deepseek_peak_period_1_start, self.deepseek_peak_period_1_end
             ),
         )
         peak_form.addRow(
-            "高峰时段 2",
+            bind_text(QLabel(), "高峰时段 2"),
             self._peak_period_row(
                 self.deepseek_peak_period_2_start, self.deepseek_peak_period_2_end
             ),
         )
         peak_layout.addLayout(peak_form)
-        peak_hint = QLabel("按北京时间判断；高峰时所有计费项按平时价格 2 倍计费。")
+        peak_hint = bind_text(QLabel(), "按北京时间判断；高峰时所有计费项按平时价格 2 倍计费。")
         peak_hint.setWordWrap(True)
         peak_hint.setProperty("tone", "muted")
         peak_hint.setStyleSheet("font-size: 12px;")
@@ -367,7 +376,7 @@ class SettingsWindow(QDialog):
         content_layout.addLayout(connection_actions)
         content_layout.addWidget(self.connection_feedback)
         content_layout.addStretch(1)
-        self.tabs.addTab(self.scroll_area, "账户连接")
+        add_tab(self.tabs, self.scroll_area, "账户连接")
 
         appearance_layout = self._add_settings_page("外观", "调整主题与面板外观，修改立即应用并保存。")
 
@@ -377,30 +386,41 @@ class SettingsWindow(QDialog):
         appearance_form.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
         appearance_form.setHorizontalSpacing(16)
         appearance_form.setVerticalSpacing(10)
+        self.language_combo = _SettingsComboBox()
+        for language, label in LANGUAGES:
+            # 语言自称保持原文，误选语言后仍能找到熟悉的选项。
+            if language == "system":
+                add_item(self.language_combo, label, language)
+            else:
+                self.language_combo.addItem(label, language)
+        self.language_combo.setCurrentIndex(max(0, self.language_combo.findData(
+            config_manager.get("UI_LANGUAGE", "system")
+        )))
+        bind_text(self.language_combo, "选择后立即生效并保存，不影响其他未提交的设置。", method="setToolTip")
+        appearance_form.addRow("Language / 语言", self.language_combo)
+        self.language_combo.currentIndexChanged.connect(self._on_language_changed)
         self.theme_combo = _SettingsComboBox()
-        self.theme_combo.addItem("跟随系统", "system")
-        self.theme_combo.addItem("浅色", "light")
-        self.theme_combo.addItem("深色", "dark")
-        self.theme_combo.setToolTip(
-            "主题与调色盘会立即应用并保存"
-        )
-        appearance_form.addRow("外观主题", self.theme_combo)
+        add_item(self.theme_combo, "跟随系统", "system")
+        add_item(self.theme_combo, "浅色", "light")
+        add_item(self.theme_combo, "深色", "dark")
+        bind_text(self.theme_combo, "主题与调色盘会立即应用并保存", method='setToolTip')
+        appearance_form.addRow(bind_text(QLabel(), "外观主题"), self.theme_combo)
 
         accent_row = QWidget()
         accent_layout = QHBoxLayout(accent_row)
         accent_layout.setContentsMargins(0, 0, 0, 0)
         accent_layout.setSpacing(8)
         self.accent_color_edit = QLineEdit()
-        self.accent_color_edit.setPlaceholderText("#RRGGBB")
+        bind_text(self.accent_color_edit, "#RRGGBB", method='setPlaceholderText')
         self.accent_color_edit.setMaxLength(7)
-        self.accent_color_edit.setToolTip("输入完整的十六进制主题主色")
+        bind_text(self.accent_color_edit, "输入完整的十六进制主题主色", method='setToolTip')
         self.accent_color_button = QPushButton()
         self.accent_color_button.setFixedWidth(42)
-        self.accent_color_button.setToolTip("打开颜色选择器")
-        self.accent_color_button.setAccessibleName("选择主题主色")
+        bind_text(self.accent_color_button, "打开颜色选择器", method='setToolTip')
+        bind_text(self.accent_color_button, "选择主题主色", method='setAccessibleName')
         accent_layout.addWidget(self.accent_color_edit, 1)
         accent_layout.addWidget(self.accent_color_button)
-        appearance_form.addRow("主题主色", accent_row)
+        appearance_form.addRow(bind_text(QLabel(), "主题主色"), accent_row)
 
         opacity_row = QWidget()
         opacity_layout = QHBoxLayout(opacity_row)
@@ -410,27 +430,25 @@ class SettingsWindow(QDialog):
         self.panel_opacity_slider.setRange(70, 100)
         self.panel_opacity_slider.setSingleStep(1)
         self.panel_opacity_slider.setPageStep(5)
-        self.panel_opacity_slider.setToolTip("仅调整展开面板背景，不降低文字和控件清晰度")
-        self.panel_opacity_label = QLabel("100%")
+        bind_text(self.panel_opacity_slider, "仅调整展开面板背景，不降低文字和控件清晰度", method='setToolTip')
+        self.panel_opacity_label = bind_text(QLabel(), "100%")
         self.panel_opacity_label.setFixedWidth(38)
         self.panel_opacity_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         opacity_layout.addWidget(self.panel_opacity_slider, 1)
         opacity_layout.addWidget(self.panel_opacity_label)
-        appearance_form.addRow("面板透明度", opacity_row)
+        appearance_form.addRow(bind_text(QLabel(), "面板透明度"), opacity_row)
 
-        self.ball_size_hint = QLabel(
-            "悬停在悬浮球上时，滚动鼠标滚轮即可调整大小。"
-        )
+        self.ball_size_hint = bind_text(QLabel(), "悬停在悬浮球上时，滚动鼠标滚轮即可调整大小。")
         self.ball_size_hint.setWordWrap(True)
         self.ball_size_hint.setProperty("tone", "muted")
         self.ball_size_hint.setStyleSheet("font-size: 12px;")
-        appearance_form.addRow("悬浮球大小", self.ball_size_hint)
+        appearance_form.addRow(bind_text(QLabel(), "悬浮球大小"), self.ball_size_hint)
 
-        self.reset_appearance_button = QPushButton("恢复当前主题默认配置")
-        self.reset_appearance_button.setToolTip("只重置当前解析出的浅色或深色主题")
-        appearance_form.addRow("", self.reset_appearance_button)
+        self.reset_appearance_button = bind_text(QPushButton(), "恢复当前主题默认配置")
+        bind_text(self.reset_appearance_button, "只重置当前解析出的浅色或深色主题", method='setToolTip')
+        appearance_form.addRow(bind_text(QLabel(), ""), self.reset_appearance_button)
         appearance_layout.addWidget(appearance_card)
         appearance_layout.addStretch(1)
 
@@ -466,31 +484,29 @@ class SettingsWindow(QDialog):
         runtime_form.setVerticalSpacing(10)
         self.refresh_seconds = QSpinBox()
         self.refresh_seconds.setRange(5, 3600)
-        self.refresh_seconds.setSuffix(" 秒")
-        runtime_form.addRow("刷新间隔", self.refresh_seconds)
+        bind_text(self.refresh_seconds, " 秒", method='setSuffix')
+        runtime_form.addRow(bind_text(QLabel(), "刷新间隔"), self.refresh_seconds)
         background_provider_widget = QWidget()
         background_provider_layout = QHBoxLayout(background_provider_widget)
         background_provider_layout.setContentsMargins(0, 0, 0, 0)
         background_provider_layout.setSpacing(10)
         self.background_provider_checks: dict[str, QCheckBox] = {}
         for provider_id, provider_name in list_providers():
-            check = QCheckBox(provider_name)
-            check.setToolTip("勾选后，即使不是当前数据来源也会在后台定时获取")
+            check = bind_text(QCheckBox(), provider_name)
+            bind_text(check, "勾选后，即使不是当前数据来源也会在后台定时获取", method='setToolTip')
             self.background_provider_checks[provider_id] = check
             background_provider_layout.addWidget(check)
-        runtime_form.addRow("同时获取", background_provider_widget)
+        runtime_form.addRow(bind_text(QLabel(), "同时获取"), background_provider_widget)
         self.minute_usage_interval_minutes = QSpinBox()
         self.minute_usage_interval_minutes.setRange(1, 60)
-        self.minute_usage_interval_minutes.setSuffix(" 分钟")
-        self.minute_usage_interval_minutes.setToolTip(
-            "仅合并分时图的展示粒度，底层分钟数据和刷新频率保持不变"
-        )
-        runtime_form.addRow("分时统计间隔", self.minute_usage_interval_minutes)
+        bind_text(self.minute_usage_interval_minutes, " 分钟", method='setSuffix')
+        bind_text(self.minute_usage_interval_minutes, "仅合并分时图的展示粒度，底层分钟数据和刷新频率保持不变", method='setToolTip')
+        runtime_form.addRow(bind_text(QLabel(), "分时统计间隔"), self.minute_usage_interval_minutes)
         self.minute_usage_chart_type = _SettingsComboBox()
-        self.minute_usage_chart_type.addItem("柱状图", "bar")
-        self.minute_usage_chart_type.addItem("折线图", "line")
-        self.minute_usage_chart_type.setToolTip("切换今日分时主图和全天导航的展示样式")
-        runtime_form.addRow("分时图表样式", self.minute_usage_chart_type)
+        add_item(self.minute_usage_chart_type, "柱状图", "bar")
+        add_item(self.minute_usage_chart_type, "折线图", "line")
+        bind_text(self.minute_usage_chart_type, "切换今日分时主图和全天导航的展示样式", method='setToolTip')
+        runtime_form.addRow(bind_text(QLabel(), "分时图表样式"), self.minute_usage_chart_type)
         runtime_layout.addWidget(self.deepseek_peak_pricing_card)
         runtime_layout.addStretch(1)
 
@@ -503,31 +519,29 @@ class SettingsWindow(QDialog):
         storage_layout.addLayout(storage_form)
         self.minute_usage_retention_days = QSpinBox()
         self.minute_usage_retention_days.setRange(1, 365)
-        self.minute_usage_retention_days.setSuffix(" 天")
-        self.minute_usage_retention_days.setToolTip(
-            "界面展示最近 N 天分时估算数据；本地数据保留双倍宽限期，超过 2N 天后才自动清理"
-        )
-        storage_form.addRow("分时数据保留天数", self.minute_usage_retention_days)
+        bind_text(self.minute_usage_retention_days, " 天", method='setSuffix')
+        bind_text(self.minute_usage_retention_days, "界面展示最近 N 天分时估算数据；本地数据保留双倍宽限期，超过 2N 天后才自动清理", method='setToolTip')
+        storage_form.addRow(bind_text(QLabel(), "分时数据保留天数"), self.minute_usage_retention_days)
         data_dir_row = QWidget()
         data_dir_layout = QHBoxLayout(data_dir_row)
         data_dir_layout.setContentsMargins(0, 0, 0, 0)
         data_dir_layout.setSpacing(8)
         self.data_dir_edit = QLineEdit()
         self.data_dir_edit.setReadOnly(True)
-        self.data_dir_edit.setToolTip("配置、数据库、日志、更新缓存和专用浏览器会话的保存目录")
-        self.data_dir_browse_button = QPushButton("选择…")
+        bind_text(self.data_dir_edit, "配置、数据库、日志、更新缓存和专用浏览器会话的保存目录", method='setToolTip')
+        self.data_dir_browse_button = bind_text(QPushButton(), "选择…")
         self.data_dir_browse_button.clicked.connect(self._choose_data_dir)
-        self.data_dir_default_button = QPushButton("恢复默认")
+        self.data_dir_default_button = bind_text(QPushButton(), "恢复默认")
         self.data_dir_default_button.clicked.connect(self._restore_default_data_dir)
         data_dir_layout.addWidget(self.data_dir_edit, 1)
         data_dir_layout.addWidget(self.data_dir_browse_button)
         data_dir_layout.addWidget(self.data_dir_default_button)
-        storage_form.addRow("应用数据目录", data_dir_row)
+        storage_form.addRow(bind_text(QLabel(), "应用数据目录"), data_dir_row)
         self.data_dir_status = QLabel()
         self.data_dir_status.setWordWrap(True)
         self.data_dir_status.setProperty("tone", "muted")
         self.data_dir_status.setStyleSheet("font-size: 12px;")
-        storage_form.addRow("", self.data_dir_status)
+        storage_form.addRow(bind_text(QLabel(), ""), self.data_dir_status)
         storage_layout.addStretch(1)
 
         update_page_layout = self._add_settings_page(
@@ -538,7 +552,7 @@ class SettingsWindow(QDialog):
         update_layout = QVBoxLayout(self.update_card)
         update_layout.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
         update_layout.setSpacing(10)
-        update_title = QLabel("软件更新")
+        update_title = bind_text(QLabel(), "软件更新")
         update_title.setStyleSheet("font-size: 14px; font-weight: 600;")
         update_layout.addWidget(update_title)
 
@@ -548,26 +562,26 @@ class SettingsWindow(QDialog):
         self.current_version_label = QLabel()
         self.auto_check_updates = _SettingsSwitch("启动后自动检查")
         self.update_channel_combo = _SettingsComboBox()
-        self.update_channel_combo.addItem("正式版", "stable")
-        self.update_channel_combo.addItem("预发布版", "prerelease")
+        add_item(self.update_channel_combo, "正式版", "stable")
+        add_item(self.update_channel_combo, "预发布版", "prerelease")
         self.update_status_label = QLabel()
         self.update_status_label.setWordWrap(True)
         self.update_status_label.setProperty("tone", "muted")
         self.update_status_label.setStyleSheet("font-size: 12px;")
-        update_form.addRow("当前版本", self.current_version_label)
-        update_form.addRow("自动检查", self.auto_check_updates)
-        update_form.addRow("更新通道", self.update_channel_combo)
-        update_form.addRow("检查状态", self.update_status_label)
+        update_form.addRow(bind_text(QLabel(), "当前版本"), self.current_version_label)
+        update_form.addRow(bind_text(QLabel(), "自动检查"), self.auto_check_updates)
+        update_form.addRow(bind_text(QLabel(), "更新通道"), self.update_channel_combo)
+        update_form.addRow(bind_text(QLabel(), "检查状态"), self.update_status_label)
         update_layout.addLayout(update_form)
 
         update_actions = QHBoxLayout()
         update_actions.setContentsMargins(0, 0, 0, 0)
         update_actions.setSpacing(8)
-        self.check_updates_button = QPushButton("检查更新")
+        self.check_updates_button = bind_text(QPushButton(), "检查更新")
         self.check_updates_button.clicked.connect(self._check_updates)
-        self.skip_update_button = QPushButton("跳过当前版本")
+        self.skip_update_button = bind_text(QPushButton(), "跳过当前版本")
         self.skip_update_button.clicked.connect(self._skip_current_update)
-        self.project_homepage_button = QPushButton("GitHub 项目主页")
+        self.project_homepage_button = bind_text(QPushButton(), "GitHub 项目主页")
         self.project_homepage_button.clicked.connect(self._open_project_homepage)
         update_actions.addWidget(self.check_updates_button)
         update_actions.addWidget(self.skip_update_button)
@@ -575,7 +589,7 @@ class SettingsWindow(QDialog):
         update_actions.addStretch(1)
         update_layout.addLayout(update_actions)
         # 常驻入口比弹窗索要 Star 更克制，也让安装版用户能随时找到源码和反馈渠道。
-        project_hint = QLabel("如果 TokenMeter 对你有帮助，欢迎在 GitHub 点 Star，帮助更多人发现它。")
+        project_hint = bind_text(QLabel(), "如果 TokenMeter 对你有帮助，欢迎在 GitHub 点 Star，帮助更多人发现它。")
         project_hint.setWordWrap(True)
         project_hint.setProperty("tone", "muted")
         project_hint.setStyleSheet("font-size: 12px;")
@@ -598,13 +612,16 @@ class SettingsWindow(QDialog):
         self._sync_window_size()
         self._connect_autosave()
         self._autosave_ready = True
+        controller = language_controller()
+        if controller is not None:
+            controller.changed.connect(self._on_language_state_changed)
 
     def _add_settings_page(self, title: str, description: str) -> QVBoxLayout:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 20, 0, 8)
         layout.setSpacing(12)
-        hint = QLabel(description)
+        hint = bind_text(QLabel(), description)
         hint.setWordWrap(True)
         hint.setProperty("tone", "muted")
         layout.addWidget(hint)
@@ -612,7 +629,7 @@ class SettingsWindow(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(page)
-        self.tabs.addTab(scroll, title)
+        add_tab(self.tabs, scroll, title)
         return layout
 
     @staticmethod
@@ -624,17 +641,17 @@ class SettingsWindow(QDialog):
         row_layout.setSpacing(20)
         labels = QVBoxLayout()
         labels.setSpacing(8)
-        label = QLabel(title)
+        label = bind_text(QLabel(), title)
         label.setObjectName("settingsRowTitle")
         label.setBuddy(control)
-        detail = QLabel(hint)
+        detail = bind_text(QLabel(), hint)
         detail.setWordWrap(True)
         detail.setProperty("tone", "muted")
         labels.addWidget(label)
         labels.addWidget(detail)
         row_layout.addLayout(labels, 1)
         row_layout.addWidget(control)
-        control.setToolTip(hint)
+        bind_text(control, hint, method='setToolTip')
         layout.addWidget(row)
 
     def _connect_autosave(self) -> None:
@@ -642,7 +659,7 @@ class SettingsWindow(QDialog):
         for control in self.findChildren(QCheckBox):
             control.clicked.connect(self._schedule_save)
         for control in self.findChildren(QComboBox):
-            if control is not self.theme_combo:
+            if control not in (self.theme_combo, self.language_combo):
                 control.activated.connect(self._schedule_save)
         for control in self.findChildren(QSpinBox):
             control.setKeyboardTracking(False)
@@ -714,18 +731,18 @@ class SettingsWindow(QDialog):
 
     def _bind_update_controller(self) -> None:
         if self.update_controller is None:
-            self.current_version_label.setText("v开发模式")
-            self.update_status_label.setText("当前窗口未接入更新控制器。")
+            bind_text(self.current_version_label, "v开发模式")
+            bind_text(self.update_status_label, "当前窗口未接入更新控制器。")
             self.skip_update_button.setEnabled(False)
             return
-        self.current_version_label.setText(self.update_controller.version_text())
+        bind_text(self.current_version_label, self.update_controller.version_text())
         self.update_controller.status_changed.connect(self._set_update_status)
         self.update_controller.latest_release_changed.connect(self._on_latest_release_changed)
         self._set_update_status(self.update_controller.status_text())
         self._on_latest_release_changed(self.update_controller.latest_release())
 
     def _set_update_status(self, text: str) -> None:
-        self.update_status_label.setText(text)
+        bind_text(self.update_status_label, text)
 
     def _on_latest_release_changed(self, release) -> None:
         self.skip_update_button.setEnabled(release is not None)
@@ -750,7 +767,7 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(start)
-        layout.addWidget(QLabel("至"))
+        layout.addWidget(bind_text(QLabel(), "至"))
         layout.addWidget(end)
         layout.addStretch(1)
         return row
@@ -769,6 +786,32 @@ class SettingsWindow(QDialog):
             self._commit_appearance()
         mode = str(self.theme_combo.currentData() or "dark")
         self.theme_requested.emit(mode)
+
+    def _on_language_changed(self, _index: int) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        controller = language_controller()
+        if controller is None:
+            controller = configure_language(QApplication.instance(), config_manager.get("UI_LANGUAGE", "system"))
+            controller.changed.connect(self._on_language_state_changed)
+        previous = controller.preference
+        requested = str(self.language_combo.currentData() or "system")
+        try:
+            config_manager.save_ui_language(requested)
+        except Exception:
+            config_manager.logger().exception("Language preference could not be saved")
+            blocker = QSignalBlocker(self.language_combo)
+            self.language_combo.setCurrentIndex(self.language_combo.findData(previous))
+            del blocker
+            self.set_theme_feedback("语言切换失败，已恢复原设置。", "danger")
+            return
+        controller.set_language(requested)
+        self.set_theme_feedback("语言已切换。", "success")
+
+    def _on_language_state_changed(self, preference: str, _resolved: str) -> None:
+        blocker = QSignalBlocker(self.language_combo)
+        self.language_combo.setCurrentIndex(self.language_combo.findData(preference))
+        del blocker
 
     def _on_theme_state_changed(self, mode: str, resolved: str) -> None:
         self.set_theme_mode(mode, resolved)
@@ -802,7 +845,7 @@ class SettingsWindow(QDialog):
             self.accent_color_edit.setText(normalized)
             self.panel_opacity_slider.setValue(int(opacity))
             del color_blocker, opacity_blocker
-            self.panel_opacity_label.setText(f"{int(opacity)}%")
+            bind_text(self.panel_opacity_label, f"{int(opacity)}%")
             self._refresh_accent_swatch(normalized)
         finally:
             self._syncing_appearance = False
@@ -817,7 +860,7 @@ class SettingsWindow(QDialog):
         )
 
     def _on_appearance_edited(self, _value=None) -> None:
-        self.panel_opacity_label.setText(f"{self.panel_opacity_slider.value()}%")
+        bind_text(self.panel_opacity_label, f"{self.panel_opacity_slider.value()}%")
         if self._syncing_appearance:
             return
         color = self.accent_color_edit.text().strip()
@@ -894,8 +937,8 @@ class SettingsWindow(QDialog):
 
     def _set_feedback(self, label: QLabel, message: str, tone: str) -> None:
         label.setProperty("tone", tone)
-        label.setText(message)
-        label.setToolTip(message)
+        bind_text(label, message)
+        bind_text(label, message, method='setToolTip')
         label.style().unpolish(label)
         label.style().polish(label)
         label.update()
@@ -942,8 +985,8 @@ class SettingsWindow(QDialog):
             return
         self._cookie_acquire_provider_id = self._rendered_provider_id
         self._cookie_acquire_button.setEnabled(False)
-        self._cookie_acquire_button.setText("正在打开浏览器…")
-        self._cookie_acquire_status.setText("正在打开浏览器，请在浏览器中完成登录。")
+        bind_text(self._cookie_acquire_button, "正在打开浏览器…")
+        bind_text(self._cookie_acquire_status, "正在打开浏览器，请在浏览器中完成登录。")
         worker = _CookieAcquireWorker(provider_cls, self)
         self._cookie_acquire_worker = worker
         worker.success.connect(
@@ -961,23 +1004,17 @@ class SettingsWindow(QDialog):
                     not self._credential_acquire_automatic
                 )
                 if self._credential_acquire_automatic:
-                    self._cookie_acquire_status.setText(
-                        f"浏览器已打开，请登录；程序将自动捕获并验证 {self._credential_acquire_label}。"
-                    )
+                    bind_text(self._cookie_acquire_status, f"浏览器已打开，请登录；程序将自动捕获并验证 {self._credential_acquire_label}。")
                 else:
                     self._cookie_finish_button.setEnabled(True)
-                    self._cookie_acquire_status.setText(
-                        "浏览器已打开，请登录后回到本窗口点击“完成采集”。"
-                    )
+                    bind_text(self._cookie_acquire_status, "浏览器已打开，请登录后回到本窗口点击“完成采集”。")
 
         QTimer.singleShot(500, _after_browser_open)
 
     def _finish_cookie_acquire(self) -> None:
         if self._cookie_acquire_worker is None:
             return
-        self._cookie_acquire_status.setText(
-            f"正在读取 {self._credential_acquire_label}…"
-        )
+        bind_text(self._cookie_acquire_status, f"正在读取 {self._credential_acquire_label}…")
         self._cookie_acquire_worker.stop_and_collect()
 
     def _apply_acquired_cookie(
@@ -1006,13 +1043,9 @@ class SettingsWindow(QDialog):
             # Do not replace a usable persisted Cookie with a value that requests
             # cannot replay; the provider will use the retained browser instead.
             self._cookie_acquire_button.setEnabled(True)
-            self._cookie_acquire_button.setText(
-                f"一键获取 {self._credential_acquire_label}"
-            )
+            bind_text(self._cookie_acquire_button, f"一键获取 {self._credential_acquire_label}")
             self._cookie_finish_button.setVisible(False)
-            self._cookie_acquire_status.setText(
-                "专用浏览器会话已验证；Cookie 无法由程序直连，当前凭据未覆盖。"
-            )
+            bind_text(self._cookie_acquire_status, "专用浏览器会话已验证；Cookie 无法由程序直连，当前凭据未覆盖。")
             return
         # Save the fresh browser session immediately so changing tabs cannot restore stale drafts.
         self._provider_drafts.setdefault(provider_id, {}).update(values)
@@ -1031,9 +1064,7 @@ class SettingsWindow(QDialog):
                 )
                 if self._rendered_provider_id == provider_id:
                     self._cookie_acquire_button.setEnabled(True)
-                    self._cookie_acquire_status.setText(
-                        f"{self._credential_acquire_label} 已验证，但安全保存失败。"
-                    )
+                    bind_text(self._cookie_acquire_status, f"{self._credential_acquire_label} 已验证，但安全保存失败。")
                 return
             saved_automatically = True
         if self._rendered_provider_id != provider_id:
@@ -1049,15 +1080,11 @@ class SettingsWindow(QDialog):
             elif isinstance(widget, QLineEdit):
                 widget.setText(value)
         self._cookie_acquire_button.setEnabled(True)
-        self._cookie_acquire_button.setText(
-            f"一键获取 {self._credential_acquire_label}"
-        )
+        bind_text(self._cookie_acquire_button, f"一键获取 {self._credential_acquire_label}")
         self._cookie_finish_button.setVisible(False)
-        self._cookie_acquire_status.setText(
-            f"{self._credential_acquire_label} 已验证并安全保存。"
+        bind_text(self._cookie_acquire_status, f"{self._credential_acquire_label} 已验证并安全保存。"
             if saved_automatically
-            else f"{self._credential_acquire_label} 已自动填入，正在保存。"
-        )
+            else f"{self._credential_acquire_label} 已自动填入，正在保存。")
         if saved_automatically and self.on_saved:
             self.on_saved()
         elif not saved_automatically:
@@ -1082,16 +1109,14 @@ class SettingsWindow(QDialog):
             elif isinstance(widget, QLineEdit):
                 widget.setText(value)
         if self._cookie_acquire_status is not None:
-            self._cookie_acquire_status.setText("Cookie 已在后台自动续期并保存。")
+            bind_text(self._cookie_acquire_status, "Cookie 已在后台自动续期并保存。")
 
     def _cookie_acquire_failed(self, message: str) -> None:
         if self._rendered_provider_id == getattr(self, "_cookie_acquire_provider_id", ""):
             self._cookie_acquire_button.setEnabled(True)
-            self._cookie_acquire_button.setText(
-                f"重试获取 {self._credential_acquire_label}"
-            )
+            bind_text(self._cookie_acquire_button, f"重试获取 {self._credential_acquire_label}")
             self._cookie_finish_button.setVisible(False)
-            self._cookie_acquire_status.setText(str(message))
+            bind_text(self._cookie_acquire_status, str(message))
         config_manager.logger().warning("cookie acquire failed: %s", str(message))
 
     def _cleanup_cookie_acquire_worker(self) -> None:
@@ -1153,7 +1178,7 @@ class SettingsWindow(QDialog):
         draft = self._provider_drafts.get(provider_id, {})
         upper_id = provider_id.upper()
 
-        header = QLabel(f"{provider_instance.name} 凭据")
+        header = bind_text(QLabel(), f"{provider_instance.name} 凭据")
         header.setStyleSheet("font-size: 14px; font-weight: 600;")
         self.credentials_layout.addWidget(header)
 
@@ -1249,17 +1274,13 @@ class SettingsWindow(QDialog):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(8)
-        self._cookie_acquire_button = QPushButton(f"一键获取 {credential_label}")
-        self._cookie_acquire_button.setToolTip(
-            f"打开浏览器登录 {provider_name} 后读取 {credential_label}"
-        )
+        self._cookie_acquire_button = bind_text(QPushButton(), f"一键获取 {credential_label}")
+        bind_text(self._cookie_acquire_button, f"打开浏览器登录 {provider_name} 后读取 {credential_label}", method='setToolTip')
         self._cookie_acquire_button.clicked.connect(self._begin_cookie_acquire)
-        self._cookie_finish_button = QPushButton("完成采集")
+        self._cookie_finish_button = bind_text(QPushButton(), "完成采集")
         self._cookie_finish_button.setVisible(False)
         self._cookie_finish_button.clicked.connect(self._finish_cookie_acquire)
-        self._cookie_acquire_status = QLabel(
-            f"通过独立浏览器登录后，可将 {credential_label} 自动填回此处。"
-        )
+        self._cookie_acquire_status = bind_text(QLabel(), f"通过独立浏览器登录后，可将 {credential_label} 自动填回此处。")
         self._cookie_acquire_status.setWordWrap(True)
         self._cookie_acquire_status.setProperty("tone", "muted")
         self._cookie_acquire_status.setStyleSheet("font-size: 12px;")
@@ -1280,7 +1301,7 @@ class SettingsWindow(QDialog):
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
-        label_widget = QLabel(label)
+        label_widget = bind_text(QLabel(), label)
         label_widget.setStyleSheet("font-size: 13px;")
         layout.addWidget(label_widget)
         input_row = QHBoxLayout()
@@ -1288,23 +1309,23 @@ class SettingsWindow(QDialog):
         input_row.setSpacing(8)
         if multiline:
             editor: Union[QLineEdit, QPlainTextEdit] = QPlainTextEdit()
-            editor.setPlaceholderText("未填写" if not hint else hint)
+            bind_text(editor, "未填写" if not hint else hint, method='setPlaceholderText')
             editor.setFixedHeight(96)
         else:
             editor = QLineEdit()
-            editor.setPlaceholderText("未填写" if not hint else hint)
+            bind_text(editor, "未填写" if not hint else hint, method='setPlaceholderText')
         if secret and isinstance(editor, QLineEdit):
             editor.setEchoMode(QLineEdit.EchoMode.Password)
         if directory and isinstance(editor, QLineEdit):
             editor.setReadOnly(True)
-            browse_button = QPushButton("选择…")
+            browse_button = bind_text(QPushButton(), "选择…")
             browse_button.setObjectName("credentialDirectoryBrowseButton")
             browse_button.clicked.connect(
                 lambda _checked=False, target=editor, title=label: self._choose_credential_directory(
                     target, title
                 )
             )
-            default_button = QPushButton("使用默认")
+            default_button = bind_text(QPushButton(), "使用默认")
             default_button.setObjectName("credentialDirectoryDefaultButton")
             default_button.clicked.connect(
                 lambda _checked=False, target=editor: target.clear()
@@ -1323,7 +1344,7 @@ class SettingsWindow(QDialog):
         if initial.name.lower() == "auth.json":
             initial = initial.parent
         selected = QFileDialog.getExistingDirectory(
-            self, f"选择{label}", str(initial)
+            self, tr(f"选择{label}"), str(initial)
         )
         if selected:
             editor.setText(selected)
@@ -1496,7 +1517,7 @@ class SettingsWindow(QDialog):
     def _choose_data_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self,
-            "选择应用数据目录",
+            tr("选择应用数据目录"),
             str(self._selected_data_dir),
         )
         if not selected:
@@ -1529,8 +1550,8 @@ class SettingsWindow(QDialog):
                 # 自动保存仅对新地址询问信任，避免修改无关开关时重复弹窗。
                 result = QMessageBox.question(
                     self,
-                    "非官方 API 地址",
-                    f"{key} 会接收当前平台凭据，确认信任并继续吗？",
+                    tr("非官方 API 地址"),
+                    tr(f"{key} 会接收当前平台凭据，确认信任并继续吗？"),
                 )
                 if result != QMessageBox.StandardButton.Yes:
                     self._set_feedback(self.save_feedback, "未保存：请确认或恢复 API 地址。", "danger")
@@ -1590,8 +1611,8 @@ class SettingsWindow(QDialog):
         if data_dir_changed:
             QMessageBox.information(
                 self,
-                "重启后迁移",
-                "全部应用数据将在下次启动时迁移。迁移成功后才会切换目录，并清理原数据目录。",
+                tr("重启后迁移"),
+                tr("全部应用数据将在下次启动时迁移。迁移成功后才会切换目录，并清理原数据目录。"),
             )
 
     def _test_connection(self) -> None:
@@ -1606,13 +1627,13 @@ class SettingsWindow(QDialog):
             if key.endswith("_BASE") and value and not config_manager.is_official_base_url(value):
                 result = QMessageBox.question(
                     self,
-                    "非官方 API 地址",
-                    f"{key} 会接收当前平台凭据，确认信任并测试连接吗？",
+                    tr("非官方 API 地址"),
+                    tr(f"{key} 会接收当前平台凭据，确认信任并测试连接吗？"),
                 )
                 if result != QMessageBox.StandardButton.Yes:
                     return
         self.test_button.setEnabled(False)
-        self.test_button.setText("测试中…")
+        bind_text(self.test_button, "测试中…")
         self._set_feedback(
             self.connection_feedback, "正在使用当前输入的凭据测试连接…", "muted"
         )
@@ -1624,7 +1645,7 @@ class SettingsWindow(QDialog):
 
     def _connection_result(self, data: TokenData) -> None:
         self.test_button.setEnabled(True)
-        self.test_button.setText("测试连接")
+        bind_text(self.test_button, "测试连接")
         if data.status in {"ok", "partial"}:
             if data.status == "ok":
                 self._set_feedback(self.connection_feedback, "连接成功。", "success")

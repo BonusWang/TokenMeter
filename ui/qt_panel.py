@@ -9,7 +9,6 @@ from math import ceil, floor
 import pyqtgraph as pg
 from PySide6.QtCore import (
     QDate,
-    QLocale,
     QPoint,
     QPointF,
     QRect,
@@ -66,10 +65,12 @@ from ui.formatting import (
     format_money,
     format_money_axis,
     format_plan_active_until,
+    format_quota_metric,
     format_reset_countdown,
     format_token_axis,
     is_codex_spark_quota,
 )
+from ui.i18n import add_item, bind_text, current_language, tr, ui_locale
 from ui.qt_heatmap import TokenActivityHeatmap
 from ui.qt_theme import (
     app_icon,
@@ -113,13 +114,24 @@ class MoneyAxis(pg.AxisItem):
 
     def tickStrings(self, values, scale, spacing):
         if self.token_mode:
-            return [format_codex_tokens(value * scale) for value in values]
+            return [tr(format_codex_tokens(value * scale)) for value in values]
         return [format_money_axis(value * scale, self.currency) for value in values]
+
+    def setTicks(self, ticks) -> None:
+        # 趋势图手工指定刻度；保留原文字，切换语言时只更新标签，不重置坐标范围。
+        self._source_ticks = ticks
+        self.refresh_language()
+
+    def refresh_language(self) -> None:
+        ticks = getattr(self, "_source_ticks", None)
+        super().setTicks(
+            None if ticks is None else [[(value, tr(label)) for value, label in level] for level in ticks]
+        )
 
 
 class TokenAxis(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):
-        return [format_token_axis(value * scale) for value in values]
+        return [tr(format_token_axis(value * scale)) for value in values]
 
 
 class DraggableHeader(QFrame):
@@ -184,8 +196,8 @@ class MinuteCalendarWidget(QCalendarWidget):
         self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
         self.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
         self.setGridVisible(False)
-        self.setLocale(QLocale(QLocale.Language.Chinese, QLocale.Country.China))
-        self.setAccessibleName("分时日期日历")
+        self.setLocale(ui_locale())
+        bind_text(self, "分时日期日历", method='setAccessibleName')
         self.setFixedSize(264, 190)
         self._selectable_dates: set[str] | None = None
         self.refresh_theme()
@@ -235,7 +247,7 @@ class MinuteCalendarWidget(QCalendarWidget):
                 painter.drawRoundedRect(cell, 6, 6)
             text_color = QColor(tokens.text if selectable else tokens.disabled)
         painter.setPen(text_color)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(value.day()))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, tr(str(value.day())))
         painter.restore()
 
 
@@ -282,9 +294,9 @@ class MinuteCalendarPopup(QFrame):
     def _month_button(self, text: str, tooltip: str) -> QToolButton:
         button = QToolButton(self)
         button.setObjectName("minuteCalendarNavButton")
-        button.setText(text)
-        button.setToolTip(tooltip)
-        button.setAccessibleName(tooltip)
+        bind_text(button, text)
+        bind_text(button, tooltip, method='setToolTip')
+        bind_text(button, tooltip, method='setAccessibleName')
         button.setFixedSize(28, 26)
         return button
 
@@ -321,7 +333,7 @@ class MinuteCalendarPopup(QFrame):
 
     def _update_month_header(self) -> None:
         shown = QDate(self.calendar.yearShown(), self.calendar.monthShown(), 1)
-        self.month_label.setText(f"{shown.year()}年{shown.month()}月")
+        bind_text(self.month_label, f"{shown.year()}年{shown.month()}月")
         self.previous_month_button.setEnabled(self._month_intersects_range(shown.addMonths(-1)))
         self.next_month_button.setEnabled(self._month_intersects_range(shown.addMonths(1)))
 
@@ -384,9 +396,9 @@ class MinuteDateEdit(QWidget):
     def _button(self, text: str, tooltip: str, name: str, width: int) -> QToolButton:
         button = QToolButton(self)
         button.setObjectName(name)
-        button.setText(text)
-        button.setToolTip(tooltip)
-        button.setAccessibleName(tooltip)
+        bind_text(button, text)
+        bind_text(button, tooltip, method='setToolTip')
+        bind_text(button, tooltip, method='setAccessibleName')
         button.setFixedSize(width, 24)
         return button
 
@@ -435,7 +447,7 @@ class MinuteDateEdit(QWidget):
             self.dateChanged.emit(bounded)
 
     def _sync_display(self) -> None:
-        self.date_button.setText(self._date.toString("yyyy-MM-dd"))
+        bind_text(self.date_button, self._date.toString("yyyy-MM-dd"))
         self.popup.setDate(self._date)
         self._update_button_states()
 
@@ -543,7 +555,7 @@ class ProviderOptionDelegate(QStyledItemDelegate):
         painter.drawText(
             option.rect.adjusted(13, 0, -34, 0),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            str(index.data(Qt.ItemDataRole.DisplayRole) or ""),
+            tr(str(index.data(Qt.ItemDataRole.DisplayRole) or "")),
         )
 
         if is_current:
@@ -657,7 +669,7 @@ class ProviderQuickCombo(QComboBox):
         painter.drawText(
             self.rect().adjusted(11, 0, -34, 0),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            self.currentText(),
+            tr(self.currentText()),
         )
 
         arrow_center = QPointF(self.width() - 18, self.height() / 2)
@@ -789,9 +801,9 @@ class MetricCard(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(1)
 
-        self.title_label = QLabel(title)
+        self.title_label = bind_text(QLabel(), title)
         self.title_label.setObjectName("metricLabel")
-        self.value = QLabel("--")
+        self.value = bind_text(QLabel(), "--")
         self.value.setObjectName("metricValue")
         self.detail = QLabel()
         self.detail.setObjectName("metricDetail")
@@ -813,14 +825,14 @@ class MetricCard(QFrame):
         self.setProperty("variant", variant)
 
     def set_values(self, value: str, detail: str = "", footer: str = "") -> None:
-        self.value.setText(value)
-        self.detail.setText(detail)
-        self.footer.setText(footer)
-        self.detail.setToolTip(detail)
-        self.footer.setToolTip(footer)
+        bind_text(self.value, value)
+        bind_text(self.detail, detail)
+        bind_text(self.footer, footer)
+        bind_text(self.detail, detail, method='setToolTip')
+        bind_text(self.footer, footer, method='setToolTip')
 
     def set_title(self, title: str) -> None:
-        self.title_label.setText(title)
+        bind_text(self.title_label, title)
 
 
 class TrendUsageTooltip(QFrame):
@@ -847,7 +859,7 @@ class TrendUsageTooltip(QFrame):
         self.model_row = QWidget()
         model_layout = QHBoxLayout(self.model_row)
         model_layout.setContentsMargins(0, 0, 0, 0)
-        model_name = QLabel("模型")
+        model_name = bind_text(QLabel(), "模型")
         model_name.setObjectName("minuteTooltipMuted")
         self.model_label = QLabel()
         self.model_label.setObjectName("minuteTooltipValue")
@@ -872,9 +884,9 @@ class TrendUsageTooltip(QFrame):
         for row, label in enumerate(("输入（命中缓存）", "输入（未命中缓存）", "输出")):
             swatch = QLabel()
             swatch.setFixedSize(8, 8)
-            name = QLabel(label)
+            name = bind_text(QLabel(), label)
             name.setObjectName("minuteTooltipMuted")
-            value = QLabel("0")
+            value = bind_text(QLabel(), "0")
             value.setObjectName("minuteTooltipValue")
             value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             token_layout.addWidget(swatch, row, 0)
@@ -894,18 +906,18 @@ class TrendUsageTooltip(QFrame):
         divider.setFixedHeight(1)
         footer_layout.addWidget(divider)
         rate_row = QHBoxLayout()
-        rate_name = QLabel("缓存命中率")
+        rate_name = bind_text(QLabel(), "缓存命中率")
         rate_name.setObjectName("minuteTooltipMuted")
-        self.rate_label = QLabel("--")
+        self.rate_label = bind_text(QLabel(), "--")
         self.rate_label.setObjectName("minuteTooltipValue")
         rate_row.addWidget(rate_name)
         rate_row.addStretch(1)
         rate_row.addWidget(self.rate_label)
         footer_layout.addLayout(rate_row)
         cost_row = QHBoxLayout()
-        cost_name = QLabel("当日消耗金额")
+        cost_name = bind_text(QLabel(), "当日消耗金额")
         cost_name.setObjectName("minuteTooltipMuted")
-        self.cost_label = QLabel("--")
+        self.cost_label = bind_text(QLabel(), "--")
         self.cost_label.setObjectName("minuteTooltipCost")
         cost_row.addWidget(cost_name)
         cost_row.addStretch(1)
@@ -915,8 +927,8 @@ class TrendUsageTooltip(QFrame):
         self.hide()
 
     def set_simple(self, usage_date: date, value: str) -> None:
-        self.date_label.setText(usage_date.isoformat())
-        self.total_label.setText(value)
+        bind_text(self.date_label, usage_date.isoformat())
+        bind_text(self.total_label, value)
         self.model_row.hide()
         self.token_rows.hide()
         self.footer.hide()
@@ -926,15 +938,13 @@ class TrendUsageTooltip(QFrame):
         miss = int(row.get("cache_miss_tokens", 0) or 0)
         output = int(row.get("output_tokens", 0) or 0)
         total = hit + miss + output
-        self.date_label.setText(usage_date.strftime("%m/%d"))
-        self.total_label.setText(f"总计 {compact_tokens(total)}")
+        bind_text(self.date_label, usage_date.strftime("%m/%d"))
+        bind_text(self.total_label, f"总计 {compact_tokens(total)}")
         self.model_label.setText(str(row.get("model") or "unknown"))
         for label, value in zip(self.value_labels, (hit, miss, output)):
-            label.setText(compact_tokens(value))
-        self.rate_label.setText(
-            "--" if hit + miss == 0 else f"{hit / (hit + miss) * 100:.1f}%"
-        )
-        self.cost_label.setText(format_minute_money(row.get("cost_cny"), currency))
+            bind_text(label, compact_tokens(value))
+        bind_text(self.rate_label, "--" if hit + miss == 0 else f"{hit / (hit + miss) * 100:.1f}%")
+        bind_text(self.cost_label, format_minute_money(row.get("cost_cny"), currency))
         self.model_row.show()
         self.token_rows.show()
         self.footer.show()
@@ -959,7 +969,7 @@ class TrendCard(QFrame):
 
         heading = QHBoxLayout()
         heading.setContentsMargins(0, 0, 6, 0)
-        self.title = QLabel("近 7 天使用金额")
+        self.title = bind_text(QLabel(), "近 7 天使用金额")
         self.title.setObjectName("sectionTitle")
         heading.addWidget(self.title)
         heading.addStretch(1)
@@ -1003,9 +1013,9 @@ class TrendCard(QFrame):
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.hideButtons()
         self.plot.setMenuEnabled(False)
-        self.plot.setToolTip("")
+        bind_text(self.plot, "", method='setToolTip')
         self.plot.showGrid(x=False, y=True, alpha=0.14)
-        self.empty_label = QLabel("近 7 天暂无模型用量", self.plot)
+        self.empty_label = bind_text(QLabel(self.plot), "近 7 天暂无模型用量")
         self.empty_label.setObjectName("muted")
         self.empty_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.empty_label.hide()
@@ -1051,7 +1061,7 @@ class TrendCard(QFrame):
     def _view_button(text: str, width: int) -> QToolButton:
         button = QToolButton()
         button.setObjectName("activityModeButton")
-        button.setText(text)
+        bind_text(button, text)
         button.setCheckable(True)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setFixedSize(width, 22)
@@ -1106,14 +1116,14 @@ class TrendCard(QFrame):
     def _render(self) -> None:
         self._hide_hover()
         self.plot.clear()
-        self.plot.setToolTip("")
+        bind_text(self.plot, "", method='setToolTip')
         left_axis = self.plot.getAxis("left")
         left_axis.currency = self._currency
         model_mode = self._view == "model" and not self.view_segment.isHidden()
         left_axis.token_mode = self._token_mode or model_mode
         if model_mode:
             self._prepare_model_bars()
-            self.title.setText("近 7 天各模型 Token 使用量")
+            bind_text(self.title, "近 7 天各模型 Token 使用量")
             self.legend_scroll.show()
             self.empty_label.setVisible(not self._model_order)
         else:
@@ -1127,9 +1137,7 @@ class TrendCard(QFrame):
             self._bar_rows = []
             self._bar_models = []
             self._bar_width = self.BAR_WIDTH
-            self.title.setText(
-                "近 7 天 Token 使用量" if self._token_mode else "近 7 天使用金额"
-            )
+            bind_text(self.title, "近 7 天 Token 使用量" if self._token_mode else "近 7 天使用金额")
             self.legend_scroll.hide()
             self.empty_label.hide()
         tokens = current_theme()
@@ -1216,10 +1224,10 @@ class TrendCard(QFrame):
                 item.widget().deleteLater()
         self._legend_labels = {}
         for model in self._model_order:
-            label = QLabel(f"■ {model}")
+            label = bind_text(QLabel(), f"■ {model}")
             label.setObjectName("muted")
-            label.setToolTip(model)
-            label.setAccessibleName(model)
+            bind_text(label, model, method='setToolTip')
+            bind_text(label, model, method='setAccessibleName')
             label.setStyleSheet(f"color: {self._model_color(model).name()};")
             self._legend_labels[model] = label
             self.legend_layout.addWidget(label)
@@ -1419,9 +1427,9 @@ class MinuteUsageTooltip(QFrame):
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        self.time_label = QLabel("00:00")
+        self.time_label = bind_text(QLabel(), "00:00")
         self.time_label.setObjectName("minuteTooltipTitle")
-        self.total_label = QLabel("总计 0")
+        self.total_label = bind_text(QLabel(), "总计 0")
         self.total_label.setObjectName("minuteTooltipValue")
         header.addWidget(self.time_label)
         header.addStretch(1)
@@ -1432,7 +1440,7 @@ class MinuteUsageTooltip(QFrame):
         model_layout = QHBoxLayout(self.model_row)
         model_layout.setContentsMargins(0, 0, 0, 0)
         model_layout.setSpacing(7)
-        model_name = QLabel("模型")
+        model_name = bind_text(QLabel(), "模型")
         model_name.setObjectName("minuteTooltipMuted")
         self.model_label = QLabel()
         self.model_label.setObjectName("minuteTooltipValue")
@@ -1459,9 +1467,9 @@ class MinuteUsageTooltip(QFrame):
         for row, label in enumerate(("输入（命中缓存）", "输入（未命中缓存）", "输出")):
             swatch = QLabel()
             swatch.setFixedSize(8, 8)
-            name_label = QLabel(label)
+            name_label = bind_text(QLabel(), label)
             name_label.setObjectName("minuteTooltipMuted")
-            value_label = QLabel("0")
+            value_label = bind_text(QLabel(), "0")
             value_label.setObjectName("minuteTooltipValue")
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             rows.addWidget(swatch, row, 0)
@@ -1478,9 +1486,9 @@ class MinuteUsageTooltip(QFrame):
         layout.addWidget(divider)
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
-        rate_name = QLabel("缓存命中率")
+        rate_name = bind_text(QLabel(), "缓存命中率")
         rate_name.setObjectName("minuteTooltipMuted")
-        self.rate_label = QLabel("--")
+        self.rate_label = bind_text(QLabel(), "--")
         self.rate_label.setObjectName("minuteTooltipValue")
         footer.addWidget(rate_name)
         footer.addStretch(1)
@@ -1494,9 +1502,9 @@ class MinuteUsageTooltip(QFrame):
         layout.addWidget(cost_divider)
         cost_footer = QHBoxLayout()
         cost_footer.setContentsMargins(0, 0, 0, 0)
-        self.cost_name = QLabel("本分钟消耗金额")
+        self.cost_name = bind_text(QLabel(), "本分钟消耗金额")
         self.cost_name.setObjectName("minuteTooltipMuted")
-        self.cost_label = QLabel("--")
+        self.cost_label = bind_text(QLabel(), "--")
         self.cost_label.setObjectName("minuteTooltipCost")
         self.cost_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         cost_footer.addWidget(self.cost_name)
@@ -1519,20 +1527,20 @@ class MinuteUsageTooltip(QFrame):
         rate = "--" if hit + miss == 0 else f"{hit / (hit + miss) * 100:.1f}%"
         start_text = f"{start_minute // 60:02d}:{start_minute % 60:02d}"
         if start_minute == end_minute:
-            self.time_label.setText(start_text)
-            self.cost_name.setText("本分钟消耗金额")
+            bind_text(self.time_label, start_text)
+            bind_text(self.cost_name, "本分钟消耗金额")
         else:
             end_text = f"{end_minute // 60:02d}:{end_minute % 60:02d}"
-            self.time_label.setText(f"{start_text}–{end_text}")
-            self.cost_name.setText("本时段消耗金额")
-        self.total_label.setText(f"总计 {compact_tokens(total)}")
+            bind_text(self.time_label, f"{start_text}–{end_text}")
+            bind_text(self.cost_name, "本时段消耗金额")
+        bind_text(self.total_label, f"总计 {compact_tokens(total)}")
         model_text = "、".join(models or [])
         self.model_label.setText(model_text)
         self.model_row.setVisible(bool(model_text))
         for label, value in zip(self.value_labels, values):
-            label.setText(compact_tokens(value))
-        self.rate_label.setText(rate)
-        self.cost_label.setText(format_minute_money(cost_cny, currency))
+            bind_text(label, compact_tokens(value))
+        bind_text(self.rate_label, rate)
+        bind_text(self.cost_label, format_minute_money(cost_cny, currency))
 
     def refresh_colors(self, colors: tuple[QColor, QColor, QColor]) -> None:
         for swatch, color in zip(self.swatches, colors):
@@ -1586,7 +1594,7 @@ class MinuteUsageChart(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        self.state_label = QLabel("等待首次刷新建立估算基线")
+        self.state_label = bind_text(QLabel(), "等待首次刷新建立估算基线")
         self.state_label.setObjectName("minuteUsageState")
         self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.state_label, 1)
@@ -1766,7 +1774,7 @@ class MinuteUsageChart(QWidget):
 
     def _show_state(self, message: str) -> None:
         self._hide_hover()
-        self.state_label.setText(message)
+        bind_text(self.state_label, message)
         self.state_label.show()
         self.chart_container.hide()
 
@@ -2338,7 +2346,7 @@ class StatisticsCard(QFrame):
         line.setFixedHeight(1)
         layout.addWidget(line)
 
-        self.title = QLabel("使用统计")
+        self.title = bind_text(QLabel(), "使用统计")
         self.title.setObjectName("sectionTitle")
         layout.addWidget(self.title)
 
@@ -2352,13 +2360,13 @@ class StatisticsCard(QFrame):
             column_layout = QVBoxLayout(column)
             column_layout.setContentsMargins(0, 0, 0, 0)
             column_layout.setSpacing(1)
-            name = QLabel(label)
+            name = bind_text(QLabel(), label)
             name.setObjectName("statLabel")
             name.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
             if label == "历史使用总金额":
                 # The provider has no lifetime total; this value is the local cache scope.
-                name.setToolTip("按本机已缓存账单累计，未同步的早期账单不计入")
-            value = QLabel("--")
+                bind_text(name, "按本机已缓存账单累计，未同步的早期账单不计入", method='setToolTip')
+            value = bind_text(QLabel(), "--")
             value.setObjectName("statValue")
             value.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
             column_layout.addWidget(name)
@@ -2375,14 +2383,12 @@ class StatisticsCard(QFrame):
         layout.addLayout(columns, 1)
 
     def set_data(self, data: TokenData) -> None:
-        self.title.setText("使用统计")
+        bind_text(self.title, "使用统计")
         for name, text in zip(self._names, self.LABELS):
-            name.setText(text)
-            name.setToolTip(
-                "按本机已缓存账单累计，未同步的早期账单不计入"
+            bind_text(name, text)
+            bind_text(name, "按本机已缓存账单累计，未同步的早期账单不计入"
                 if text == "历史使用总金额"
-                else ""
-            )
+                else "", method='setToolTip')
         recent_rows = {str(row.get("date")): row for row in data.daily_usage}
         recent_dates = [date.today() - timedelta(days=offset) for offset in range(6, -1, -1)]
         recent_cost = sum(
@@ -2402,12 +2408,12 @@ class StatisticsCard(QFrame):
             compact_tokens(recent_tokens) if has_daily_data else "--",
         )
         for label, value in zip(self._values, values):
-            label.setText(value)
-            label.setToolTip("")
+            bind_text(label, value)
+            bind_text(label, "", method='setToolTip')
 
     def set_quota_data(self, data: TokenData) -> None:
         provider_name = data.per_provider[0].provider_name if data.per_provider else "Codex"
-        self.title.setText(f"{provider_name} 使用统计")
+        bind_text(self.title, f"{provider_name} 使用统计")
         items = [(metric.title, metric.value, metric.detail) for metric in data.quota_statistics]
         source_tooltip = {
             "interface": f"来自 {provider_name} 账号统计",
@@ -2417,15 +2423,16 @@ class StatisticsCard(QFrame):
             if index < len(items):
                 title, text, tooltip = items[index]
                 tooltip = source_tooltip or tooltip
-                name.setText(title)
-                name.setToolTip(tooltip)
-                value.setText(text if len(text) <= 22 else f"{text[:21]}…")
-                value.setToolTip(tooltip or text)
+                bind_text(name, title)
+                bind_text(name, tooltip, method='setToolTip')
+                metric = data.quota_statistics[index]
+                bind_text(value, lambda metric=metric: format_quota_metric(metric))
+                bind_text(value, tooltip or text, method='setToolTip')
             else:
-                name.setText("--")
-                name.setToolTip("")
-                value.setText("--")
-                value.setToolTip("")
+                bind_text(name, "--")
+                bind_text(name, "", method='setToolTip')
+                bind_text(value, "--")
+                bind_text(value, "", method='setToolTip')
 
 
 class MainPanel(QFrame):
@@ -2480,16 +2487,16 @@ class MainPanel(QFrame):
         logo = QLabel()
         logo.setPixmap(app_icon(28).pixmap(28, 28))
         logo.setFixedSize(28, 28)
-        self._title_label = QLabel(APP_DISPLAY_NAME)
+        self._title_label = bind_text(QLabel(), APP_DISPLAY_NAME)
         self._title_label.setObjectName("panelTitle")
         provider_id = str(config_manager.get("ACTIVE_PROVIDER", "deepseek"))
         self.provider_quick_combo = ProviderQuickCombo()
         self.provider_quick_combo.setObjectName("headerProviderCombo")
-        self.provider_quick_combo.setAccessibleName("快速切换数据平台")
-        self.provider_quick_combo.setToolTip("一键切换订阅或 API 数据平台")
+        bind_text(self.provider_quick_combo, "快速切换数据平台", method='setAccessibleName')
+        bind_text(self.provider_quick_combo, "一键切换订阅或 API 数据平台", method='setToolTip')
         self.provider_quick_combo.setFixedSize(132, 28)
         for item_id, item_name in list_providers():
-            self.provider_quick_combo.addItem(item_name, item_id)
+            add_item(self.provider_quick_combo, item_name, item_id)
         self.provider_quick_combo.setCurrentIndex(
             max(0, self.provider_quick_combo.findData(provider_id))
         )
@@ -2509,19 +2516,19 @@ class MainPanel(QFrame):
         header_layout.addWidget(self._title_label)
         self.settings_back_button = QToolButton()
         self.settings_back_button.setObjectName("settingsBackButton")
-        self.settings_back_button.setText("返回面板")
+        bind_text(self.settings_back_button, "返回面板")
         self.settings_back_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
         self.settings_back_button.setIconSize(QSize(14, 14))
         # 与平台切换控件共用尺寸，避免切换到设置时标题栏高度和节奏发生变化。
         self.settings_back_button.setFixedSize(132, 28)
         self.settings_back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.settings_back_button.setAccessibleName("返回面板")
+        bind_text(self.settings_back_button, "返回面板", method='setAccessibleName')
         self.settings_back_button.hide()
         header_layout.addWidget(self.settings_back_button, 0, Qt.AlignmentFlag.AlignVCenter)
         header_layout.addWidget(self.provider_quick_combo)
         header_layout.addWidget(self.pricing_badge)
         header_layout.addStretch(1)
-        self.settings_save_status = QLabel("自动保存")
+        self.settings_save_status = bind_text(QLabel(), "自动保存")
         self.settings_save_status.setObjectName("settingsSaveStatus")
         self.settings_save_status.setProperty("tone", "muted")
         self.settings_save_status.hide()
@@ -2632,7 +2639,7 @@ class MainPanel(QFrame):
         activity_header = QHBoxLayout()
         activity_header.setContentsMargins(0, 0, 0, 0)
         activity_header.setSpacing(5)
-        activity_title = QLabel("Token 活动")
+        activity_title = bind_text(QLabel(), "Token 活动")
         activity_title.setObjectName("sectionTitle")
         # 标题只占文本所需宽度，避免分时控件显示后被布局拉伸并把切换按钮推向右侧。
         activity_title.setSizePolicy(
@@ -2665,17 +2672,17 @@ class MainPanel(QFrame):
         self.minute_next_button = self.minute_date_edit.next_button
         self.minute_date_segment = self.minute_date_edit
         self.minute_controls: list[QWidget] = [self.minute_date_edit]
-        self.minute_estimate_label = QLabel("估算")
+        self.minute_estimate_label = bind_text(QLabel(), "估算")
         self.minute_estimate_label.setObjectName("muted")
         self._minute_estimate_tooltip = "按刷新间隔均摊：两次成功刷新之间的累计 Token 差额，非平台原始分钟明细"
-        self.minute_estimate_label.setToolTip(self._minute_estimate_tooltip)
-        self.activity_summary = QLabel("暂无 Token 活动")
+        bind_text(self.minute_estimate_label, self._minute_estimate_tooltip, method='setToolTip')
+        self.activity_summary = bind_text(QLabel(), "暂无 Token 活动")
         self.activity_summary.setObjectName("activitySummary")
         self.activity_summary.setMinimumWidth(200)
         self.activity_summary.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        self.activity_summary.setToolTip(self._minute_estimate_tooltip)
+        bind_text(self.activity_summary, self._minute_estimate_tooltip, method='setToolTip')
         self._annual_activity_summary = "暂无 Token 活动"
         self._activity_view = "annual"
         activity_header.addWidget(activity_title)
@@ -2703,13 +2710,13 @@ class MainPanel(QFrame):
         for token_type, label in MinuteUsageChart.SERIES:
             button = QToolButton()
             button.setObjectName("minuteLegendButton")
-            button.setText(legend_text[token_type])
+            bind_text(button, legend_text[token_type])
             button.setCheckable(True)
             button.setChecked(True)
             button.setIconSize(QSize(7, 7))
             button.setFixedWidth(legend_width[token_type])
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setToolTip(f"显示/隐藏{label}（不改变原始估算数据）")
+            bind_text(button, f"显示/隐藏{label}（不改变原始估算数据）", method='setToolTip')
             button.clicked.connect(
                 lambda checked, value=token_type: self.minute_chart.set_series_visible(value, checked)
             )
@@ -2755,7 +2762,7 @@ class MainPanel(QFrame):
         footer.setContentsMargins(SECTION_HORIZONTAL_MARGIN, 0, SECTION_HORIZONTAL_MARGIN, 0)
         footer.setSpacing(8)
         self.status_dot = StatusDot()
-        self.status_text = QLabel("等待连接")
+        self.status_text = bind_text(QLabel(), "等待连接")
         self.status_text.setObjectName("statusText")
         self.updated_text = QLabel()
         self.updated_text.setObjectName("statusText")
@@ -2779,6 +2786,23 @@ class MainPanel(QFrame):
             pass
         self._refresh_icons()
         self._set_activity_view("annual")
+        self.refresh_language_layout()
+
+    def refresh_language_layout(self) -> None:
+        # 外语短标签的字宽不同；按实际文字安排固定按钮，避免最小面板宽度下互相覆盖。
+        chinese = current_language() == "zh-cn"
+        for button in (self.annual_activity_button, self.minute_activity_button):
+            button.ensurePolished()
+            width = 72 if chinese else max(42, button.fontMetrics().horizontalAdvance(button.text()) + 20)
+            button.setFixedWidth(width)
+        self.activity_mode_segment.setFixedWidth(
+            self.annual_activity_button.width() + self.minute_activity_button.width() + 4
+        )
+        for button, width in zip(self.minute_legend_buttons.values(), (64, 54, 44)):
+            button.ensurePolished()
+            button.setFixedWidth(
+                width if chinese else max(38, button.fontMetrics().horizontalAdvance(button.text()) + 20)
+            )
 
     def show_settings(self, settings: QWidget) -> None:
         if self.content_stack.indexOf(settings) < 0:
@@ -2801,9 +2825,9 @@ class MainPanel(QFrame):
     def set_settings_save_status(self, message: str, tone: str) -> None:
         # 详细错误留在提示中，不能把共用标题栏撑宽并挤掉收起入口。
         text = "未保存" if tone == "danger" else "已自动保存" if tone == "success" else message
-        self.settings_save_status.setText(text)
-        self.settings_save_status.setToolTip(message)
-        self.settings_save_status.setAccessibleDescription(message)
+        bind_text(self.settings_save_status, text)
+        bind_text(self.settings_save_status, message, method='setToolTip')
+        bind_text(self.settings_save_status, message, method='setAccessibleDescription')
         self.settings_save_status.setProperty("tone", "muted" if tone == "success" else tone)
         self.settings_save_status.style().unpolish(self.settings_save_status)
         self.settings_save_status.style().polish(self.settings_save_status)
@@ -2843,7 +2867,7 @@ class MainPanel(QFrame):
     def _activity_mode_button(self, text: str, checked: bool) -> QToolButton:
         button = QToolButton()
         button.setObjectName("activityModeButton")
-        button.setText(text)
+        bind_text(button, text)
         button.setCheckable(True)
         button.setChecked(checked)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
@@ -3026,8 +3050,8 @@ class MainPanel(QFrame):
         ).strip().lower()
         if chart_type not in {"bar", "line"}:
             chart_type = "bar"
-        self.minute_date_edit.date_button.setToolTip(tooltip)
-        self.minute_date_edit.date_button.setAccessibleName(tooltip)
+        bind_text(self.minute_date_edit.date_button, tooltip, method='setToolTip')
+        bind_text(self.minute_date_edit.date_button, tooltip, method='setAccessibleName')
         self.minute_chart.set_rows(
             rows,
             status,
@@ -3038,11 +3062,9 @@ class MainPanel(QFrame):
             currency=self._currency,
             model_rows=model_rows,
         )
-        self.activity_summary.setText(
-            self.minute_chart.summary_text()
+        bind_text(self.activity_summary, self.minute_chart.summary_text()
             if self._activity_view == "minute"
-            else self._annual_activity_summary
-        )
+            else self._annual_activity_summary)
         self._render_usage_card()
 
     def _set_activity_view(self, view: str) -> None:
@@ -3069,11 +3091,9 @@ class MainPanel(QFrame):
             control.setVisible(minute_view)
         for button in self.minute_legend_buttons.values():
             button.setVisible(minute_view)
-        self.activity_summary.setText(
-            self._minute_chart.summary_text()
+        bind_text(self.activity_summary, self._minute_chart.summary_text()
             if minute_view
-            else self._annual_activity_summary
-        )
+            else self._annual_activity_summary)
         self._render_usage_card()
         self.activity_card.layout().invalidate()
         self._refresh_minute_control_colors()
@@ -3102,8 +3122,8 @@ class MainPanel(QFrame):
         button.setAutoRaise(True)
         button.setFixedSize(24, 24)
         button.setIconSize(QSize(14, 14))
-        button.setToolTip(tooltip)
-        button.setAccessibleName(tooltip)
+        bind_text(button, tooltip, method='setToolTip')
+        bind_text(button, tooltip, method='setAccessibleName')
         button.clicked.connect(lambda _checked=False, value=mode: self._request_theme(value))
         button._theme_icon_name = icon_name
         return button
@@ -3117,8 +3137,8 @@ class MainPanel(QFrame):
     ) -> QToolButton:
         button = QToolButton()
         button.setIconSize(QSize(18, 18))
-        button.setToolTip(tooltip)
-        button.setAccessibleName(tooltip)
+        bind_text(button, tooltip, method='setToolTip')
+        bind_text(button, tooltip, method='setAccessibleName')
         button.setObjectName("panelToolButton")
         if role:
             button.setProperty("role", role)
@@ -3155,23 +3175,23 @@ class MainPanel(QFrame):
         if normalized_mode == "system":
             theme_name = "浅色" if is_light else "深色"
             segment_tip = f"跟随系统（当前为{theme_name}主题）"
-            self.light_theme_button.setToolTip(f"{segment_tip}；点击固定为浅色主题")
-            self.dark_theme_button.setToolTip(f"{segment_tip}；点击固定为深色主题")
+            bind_text(self.light_theme_button, f"{segment_tip}；点击固定为浅色主题", method='setToolTip')
+            bind_text(self.dark_theme_button, f"{segment_tip}；点击固定为深色主题", method='setToolTip')
         else:
             segment_tip = "浅色主题" if is_light else "深色主题"
-            self.light_theme_button.setToolTip("浅色主题（当前）" if is_light else "切换到浅色主题")
-            self.dark_theme_button.setToolTip("深色主题（当前）" if not is_light else "切换到深色主题")
-        self.theme_segment.setToolTip(segment_tip)
-        self.theme_segment.setAccessibleDescription(segment_tip)
+            bind_text(self.light_theme_button, "浅色主题（当前）" if is_light else "切换到浅色主题", method='setToolTip')
+            bind_text(self.dark_theme_button, "深色主题（当前）" if not is_light else "切换到深色主题", method='setToolTip')
+        bind_text(self.theme_segment, segment_tip, method='setToolTip')
+        bind_text(self.theme_segment, segment_tip, method='setAccessibleDescription')
 
     def set_theme_feedback(self, message: str, tone: str = "danger") -> None:
         """Expose persistence feedback without replacing provider connection status."""
         self._theme_feedback_message = message.strip()
         self.theme_segment.setProperty("feedbackTone", tone)
         if self._theme_feedback_message:
-            self.theme_segment.setToolTip(self._theme_feedback_message)
-            self.light_theme_button.setToolTip(self._theme_feedback_message)
-            self.dark_theme_button.setToolTip(self._theme_feedback_message)
+            bind_text(self.theme_segment, self._theme_feedback_message, method='setToolTip')
+            bind_text(self.light_theme_button, self._theme_feedback_message, method='setToolTip')
+            bind_text(self.dark_theme_button, self._theme_feedback_message, method='setToolTip')
 
     def _on_theme_changed(self, mode: str, resolved: str) -> None:
         self.set_theme_mode(mode, resolved)
@@ -3195,21 +3215,21 @@ class MainPanel(QFrame):
 
     def set_refreshing(self, refreshing: bool) -> None:
         self.refresh_button.setEnabled(not refreshing)
-        self.refresh_button.setToolTip("刷新中" if refreshing else "刷新")
+        bind_text(self.refresh_button, "刷新中" if refreshing else "刷新", method='setToolTip')
 
     def set_pricing_state(
         self, enabled: bool, is_peak: bool = False, label: str = "", tooltip: str = ""
     ) -> None:
         self.pricing_badge.setVisible(enabled and self.content_stack.currentIndex() == 0)
         if not enabled:
-            self.pricing_badge.setText("")
-            self.pricing_badge.setToolTip("")
-            self.pricing_badge.setAccessibleDescription("")
+            bind_text(self.pricing_badge, "")
+            bind_text(self.pricing_badge, "", method='setToolTip')
+            bind_text(self.pricing_badge, "", method='setAccessibleDescription')
             return
-        self.pricing_badge.setText(label)
-        self.pricing_badge.setToolTip(tooltip)
-        self.pricing_badge.setAccessibleName(label)
-        self.pricing_badge.setAccessibleDescription(tooltip.replace("\n", "；"))
+        bind_text(self.pricing_badge, label)
+        bind_text(self.pricing_badge, tooltip, method='setToolTip')
+        bind_text(self.pricing_badge, label, method='setAccessibleName')
+        bind_text(self.pricing_badge, tooltip.replace("\n", "；"), method='setAccessibleDescription')
         self.pricing_badge.setProperty("pricingState", "peak" if is_peak else "offpeak")
         # Dynamic Qt properties do not automatically trigger stylesheet rematching.
         self.pricing_badge.style().unpolish(self.pricing_badge)
@@ -3238,7 +3258,7 @@ class MainPanel(QFrame):
                 else f"过去 12 个月共使用 {formatted_total}"
             )
         self._annual_activity_summary = summary
-        self.activity_summary.setText(summary)
+        bind_text(self.activity_summary, summary)
 
     def update_data(
         self,
@@ -3318,7 +3338,7 @@ class MainPanel(QFrame):
             for card, (title, value, detail) in zip(cards, summaries):
                 card.set_title(title)
                 card.set_values(value, detail, "")
-                card.value.setToolTip(detail)
+                bind_text(card.value, detail, method='setToolTip')
                 card.detail.setVisible(bool(detail))
             # 近 7 天拥有独立序列：只在这里合并本机当天估算，不能传给官方热力图。
             self.trend.set_rows(
@@ -3334,9 +3354,9 @@ class MainPanel(QFrame):
                 "cache_mixed": "历史数据来自缓存；当天 Token 为本机会话日志估算",
                 "local": "接口统计暂不可用；仅当天 Token 来自本机会话日志估算",
             }.get(data.weekly_activity_source, "")
-            self.trend.title.setToolTip(weekly_tooltip)
-            self.trend.title.setAccessibleDescription(weekly_tooltip)
-            self.trend.plot.setToolTip("")
+            bind_text(self.trend.title, weekly_tooltip, method='setToolTip')
+            bind_text(self.trend.title, weekly_tooltip, method='setAccessibleDescription')
+            bind_text(self.trend.plot, "", method='setToolTip')
             self._activity_view = "annual"
             self.activity_stack.setCurrentIndex(0)
             self.annual_activity_button.setChecked(True)
@@ -3349,7 +3369,7 @@ class MainPanel(QFrame):
                 "interface": f"来自 {provider_name} 账号统计，不含本机估算",
                 "cache": "当前显示最近一次缓存的官方 Token 活动",
             }.get(data.activity_source, "暂无可用的官方 Token 活动")
-            self.activity_summary.setToolTip(activity_tooltip)
+            bind_text(self.activity_summary, activity_tooltip, method='setToolTip')
             self.activity_card.setFixedHeight(ANNUAL_ACTIVITY_SECTION_HEIGHT)
             self._set_annual_activity_data(data)
             self.statistics.set_quota_data(data)
@@ -3360,26 +3380,26 @@ class MainPanel(QFrame):
             status = self.codex_source_summary(data, loading)
             if not status:
                 status, _color = self.status_summary(data, loading or refreshing)
-            self.status_text.setText(status)
+            bind_text(self.status_text, status)
             self.status_dot.set_role(self.status_role(data, loading))
-            self.updated_text.setText(self.codex_update_time(data))
+            bind_text(self.updated_text, self.codex_update_time(data))
             return
 
         # API billing providers retain the original amount, trend and Token activity view.
         for card in (self.today_card, self.balance_card, self.month_card):
             card.detail.hide()
         if data.minute_usage_source == "provider":
-            self.minute_estimate_label.setText("平台明细")
+            bind_text(self.minute_estimate_label, "平台明细")
             self._minute_estimate_tooltip = (
                 "来自服务商请求明细，按请求发生时间聚合 Token 与实际账单金额"
             )
         else:
-            self.minute_estimate_label.setText("估算")
+            bind_text(self.minute_estimate_label, "估算")
             self._minute_estimate_tooltip = (
                 "按刷新间隔均摊：两次成功刷新之间的累计 Token 差额，非平台原始分钟明细"
             )
-        self.minute_estimate_label.setToolTip(self._minute_estimate_tooltip)
-        self.activity_summary.setToolTip(self._minute_estimate_tooltip)
+        bind_text(self.minute_estimate_label, self._minute_estimate_tooltip, method='setToolTip')
+        bind_text(self.activity_summary, self._minute_estimate_tooltip, method='setToolTip')
         self._set_activity_view(self._activity_view)
 
         self._usage_card_loading = loading
@@ -3432,14 +3452,14 @@ class MainPanel(QFrame):
             if provider_id == "nayuto"
             else ""
         )
-        self.trend.title.setToolTip(trend_source)
-        self.trend.title.setAccessibleDescription(trend_source)
-        self.trend.plot.setToolTip("")
+        bind_text(self.trend.title, trend_source, method='setToolTip')
+        bind_text(self.trend.title, trend_source, method='setAccessibleDescription')
+        bind_text(self.trend.plot, "", method='setToolTip')
         self.statistics.set_data(data)
         status, _color = self.status_summary(data, loading or refreshing)
-        self.status_text.setText(status)
+        bind_text(self.status_text, status)
         self.status_dot.set_role(self.status_role(data, loading or refreshing))
-        self.updated_text.setText(self.relative_update_time(data))
+        bind_text(self.updated_text, self.relative_update_time(data))
 
     @staticmethod
     def status_role(data: TokenData, loading: bool = False) -> str:
