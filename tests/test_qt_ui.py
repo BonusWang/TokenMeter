@@ -2335,8 +2335,15 @@ def test_settings_deactivation_follows_panel_preference(auto_collapse):
         widget = FloatingWidget()
         try:
             widget.open_settings()
+            settings = widget._settings_window
+            QTest.keyClicks(settings._provider_widgets["AUTH"], "synthetic-focus-token")
+            assert settings._save_timer.isActive()
+            values = {
+                **config_manager.all_config(),
+                "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": auto_collapse,
+            }
             with (
-                patch("ui.qt_widget.config_manager.get", return_value=auto_collapse),
+                patch("ui.qt_widget.config_manager.get", side_effect=values.get),
                 patch.object(widget, "isActiveWindow", return_value=False),
                 patch("ui.qt_widget.QApplication.activeModalWidget", return_value=None),
                 patch("ui.qt_widget.QApplication.activePopupWidget", return_value=None),
@@ -2344,7 +2351,20 @@ def test_settings_deactivation_follows_panel_preference(auto_collapse):
                 widget._collapse_after_deactivation()
 
             assert widget._expanded is (not auto_collapse)
-            assert widget._settings_window.isVisible() is (not auto_collapse)
+            assert widget.ball.isVisible() is auto_collapse
+            assert settings.isVisible() is (not auto_collapse)
+            if auto_collapse:
+                assert config_manager.get("DEEPSEEK_AUTH") == "synthetic-focus-token"
+                assert not settings._save_timer.isActive()
+                assert widget.panel.content_stack.currentIndex() == 0
+                widget.expand_panel()
+                assert widget.panel.isVisible()
+                assert widget.panel.provider_quick_combo.isVisible()
+                assert settings.isHidden()
+                assert widget.panel.content_stack.currentIndex() == 0
+            else:
+                assert config_manager.get("DEEPSEEK_AUTH") == ""
+                assert widget.panel.content_stack.currentWidget() is settings
         finally:
             widget._closed = True
             widget.hide()
@@ -2373,6 +2393,8 @@ def test_settings_activation_ignores_child_dialog_but_not_other_windows(modal):
 
             assert widget._expanded is modal
             assert settings.isVisible() is modal
+            if not modal:
+                assert widget.panel.content_stack.currentIndex() == 0
         finally:
             other.close()
             widget._closed = True

@@ -596,6 +596,9 @@ class FloatingWidget(QWidget):
             and QApplication.activePopupWidget() is None
             and not self.isActiveWindow()
         ):
+            if self._has_settings_child():
+                # 先保存并退出设置，再收回悬浮球，确保下次展开显示数据页。
+                self._settings_window.reject()
             self.collapse_panel()
 
     def _has_settings_child(self) -> bool:
