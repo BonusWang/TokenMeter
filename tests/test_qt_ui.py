@@ -1,3 +1,4 @@
+import json
 import math
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -11,10 +12,11 @@ os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 import pyqtgraph as pg
 import pytest
 from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTime
-from PySide6.QtGui import QEnterEvent, QKeyEvent, QPainterPath
+from PySide6.QtGui import QColor, QEnterEvent, QKeyEvent, QPainterPath
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QDialog,
     QFrame,
     QLabel,
@@ -4008,6 +4010,93 @@ def test_settings_theme_palette_previews_saves_and_resets_current_resolved_theme
     assert previews[-1] == ("dark", DARK_THEME.accent, 100)
     assert saves[-1] == ("dark", DARK_THEME.accent, 100)
     window.close()
+
+
+@pytest.fixture
+def custom_color_settings(tmp_path):
+    original_colors = [QColorDialog.customColor(index) for index in range(QColorDialog.customCount())]
+    with patch.object(config_manager, "CONFIG_PATH", tmp_path / "config.json"):
+        window = SettingsWindow()
+        try:
+            yield window
+        finally:
+            window.close()
+            # QColorDialog 色板是进程级状态，必须恢复以免污染其他 UI 用例。
+            for index, color in enumerate(original_colors):
+                QColorDialog.setCustomColor(index, color)
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_settings_custom_colors_survive_restart_even_when_dialog_is_cancelled(
+    custom_color_settings, accepted
+):
+    window = custom_color_settings
+    original_accent = window.accent_color_edit.text()
+    expected = ["#FFFFFF"] * QColorDialog.customCount()
+    expected[0] = "#D14C2F"
+    expected[-1] = "#198754"
+    appearances = []
+    window.appearance_requested.connect(lambda *args: appearances.append(args))
+
+    def add_colors(*_args):
+        QColorDialog.setCustomColor(0, QColor(expected[0]))
+        QColorDialog.setCustomColor(len(expected) - 1, QColor(expected[-1]))
+        return QColor(expected[0]) if accepted else QColor()
+
+    with patch("ui.qt_settings.QColorDialog.getColor", side_effect=add_colors):
+        window._choose_accent_color()
+
+    saved = json.loads(config_manager.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["UI_CUSTOM_COLORS"] == expected
+    assert window.accent_color_edit.text() == (expected[0] if accepted else original_accent)
+    assert len(appearances) == int(accepted)
+    window.close()
+
+    # 模拟重启：清除 Qt 色板，仅从磁盘配置恢复，不借助之前的全局颜色缓存。
+    for index in range(QColorDialog.customCount()):
+        QColorDialog.setCustomColor(index, QColor("#FFFFFF"))
+    config_manager._config = config_manager.validate_config(config_manager._load_public_config())
+    reopened = SettingsWindow()
+
+    def inspect_restored_colors(*_args):
+        assert [
+            QColorDialog.customColor(index).name().upper()
+            for index in range(QColorDialog.customCount())
+        ] == expected
+        return QColor()
+
+    try:
+        with (
+            patch("ui.qt_settings.QColorDialog.getColor", side_effect=inspect_restored_colors),
+            patch.object(config_manager, "save_ui_custom_colors") as save_colors,
+        ):
+            reopened._choose_accent_color()
+            save_colors.assert_not_called()
+    finally:
+        reopened.close()
+
+
+def test_settings_custom_colors_unchanged_does_not_write_config(custom_color_settings):
+    with patch("ui.qt_settings.QColorDialog.getColor", return_value=QColor()):
+        custom_color_settings._choose_accent_color()
+    assert not config_manager.CONFIG_PATH.exists()
+
+
+def test_settings_custom_colors_save_failure_is_visible(custom_color_settings):
+    def add_color(*_args):
+        QColorDialog.setCustomColor(0, QColor("#D14C2F"))
+        return QColor("#D14C2F")
+
+    with (
+        patch("ui.qt_settings.QColorDialog.getColor", side_effect=add_color),
+        patch.object(config_manager, "save_ui_custom_colors", side_effect=OSError("disk full")),
+    ):
+        custom_color_settings._choose_accent_color()
+
+    assert "自定义颜色保存失败" in custom_color_settings.save_feedback.text()
+    assert custom_color_settings.save_feedback.property("tone") == "danger"
+    assert custom_color_settings.accent_color_edit.text() == "#D14C2F"
+    assert not config_manager.CONFIG_PATH.exists()
 
 
 def test_settings_groups_configuration_into_six_scrolling_pages():

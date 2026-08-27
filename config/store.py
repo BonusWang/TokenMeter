@@ -36,12 +36,17 @@ def validate_value(key: str, value: Any) -> Any:
         if value[0] < 280 or value[1] < 360:
             raise ValueError(f"{key} 尺寸过小")
         return value
-    if kind == "color":
-        value = str(value).strip()
-        if len(value) != 7 or not value.startswith("#"):
-            raise ValueError(f"{key} 必须是 #RRGGBB 颜色")
-        int(value[1:], 16)
-        return value
+    if kind in {"color", "color_list"}:
+        if kind == "color":
+            value = [value]
+        elif not isinstance(value, (list, tuple)):
+            raise ValueError(f"{key} 必须是颜色列表")
+        colors = [str(color).strip() for color in value]
+        for color in colors:
+            if len(color) != 7 or not color.startswith("#"):
+                raise ValueError(f"{key} 必须是 #RRGGBB 颜色")
+            int(color[1:], 16)
+        return colors[0] if kind == "color" else colors
     if kind == "bool":
         if isinstance(value, bool):
             return value

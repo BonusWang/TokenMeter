@@ -507,7 +507,6 @@ def save_ui_appearance(
     theme_name: str, accent_color: str, panel_opacity: int
 ) -> dict[str, Any]:
     """Atomically persist the accent and panel opacity for one resolved theme."""
-    global _config
     normalized_theme = str(theme_name).strip().lower()
     if normalized_theme not in {"light", "dark"}:
         raise ValueError("Resolved theme must be light or dark")
@@ -515,6 +514,20 @@ def save_ui_appearance(
     opacity_key = f"UI_{normalized_theme.upper()}_PANEL_OPACITY"
     normalized_color = validate_value(color_key, accent_color)
     normalized_opacity = validate_value(opacity_key, panel_opacity)
+    return _save_ui_appearance_values(
+        {color_key: normalized_color, opacity_key: normalized_opacity}
+    )
+
+
+def save_ui_custom_colors(colors: list[str]) -> list[str]:
+    """Persist the color dialog palette independently of the selected accent."""
+    normalized = validate_value("UI_CUSTOM_COLORS", colors)
+    _save_ui_appearance_values({"UI_CUSTOM_COLORS": normalized})
+    return normalized
+
+
+def _save_ui_appearance_values(values: dict[str, Any]) -> dict[str, Any]:
+    global _config
     temp_path = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.appearance.tmp")
     try:
         if CONFIG_PATH.exists():
@@ -524,12 +537,11 @@ def save_ui_appearance(
         else:
             public_values = _public_values(DEFAULT_CONFIG)
 
-        # 外观即时预览不能经过设置草稿，避免把尚未保存的凭据一并写入磁盘。
+        # 色板与主题外观共用只写公开字段的路径，避免把尚未保存的凭据草稿一并写盘。
         for key in SECRET_KEYS:
             public_values.pop(key, None)
         public_values["credential_store"] = "windows-credential-manager"
-        public_values[color_key] = normalized_color
-        public_values[opacity_key] = normalized_opacity
+        public_values.update(values)
         _write_json(temp_path, public_values)
         temp_path.replace(CONFIG_PATH)
     except Exception:
@@ -538,8 +550,7 @@ def save_ui_appearance(
         raise
 
     updated = _config.copy()
-    updated[color_key] = normalized_color
-    updated[opacity_key] = normalized_opacity
+    updated.update(values)
     _config = updated
-    return {color_key: normalized_color, opacity_key: normalized_opacity}
+    return values
 

@@ -474,6 +474,17 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(custom_values["WIDGET_COMPACT_SIZE"], 112)
 
+    def test_custom_colors_validate_and_preserve_slots(self):
+        self.assertEqual(config_manager.validate_config({})["UI_CUSTOM_COLORS"], [])
+        colors = ["#D14C2F", "#FFFFFF", "#D14C2F", " #198754 "]
+        self.assertEqual(
+            config_manager.validate_config({"UI_CUSTOM_COLORS": colors})["UI_CUSTOM_COLORS"],
+            ["#D14C2F", "#FFFFFF", "#D14C2F", "#198754"],
+        )
+        for invalid in (None, "#D14C2F", {}, ["blue"], ["#GG0000"]):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                config_manager.validate_config({"UI_CUSTOM_COLORS": invalid})
+
     def test_widget_position_and_size_share_state_without_overwriting(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"
         temp_root.mkdir(parents=True, exist_ok=True)
@@ -644,6 +655,66 @@ class ConfigTests(unittest.TestCase):
                 self.assertNotIn("DEEPSEEK_API_KEY", saved)
             finally:
                 config_manager._config = old_config
+
+    def test_custom_colors_round_trip_without_saving_other_drafts(self):
+        temp_root = Path.cwd() / ".test-appdata" / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            root = Path(directory)
+            config_path = root / "config.json"
+            original = json.loads(
+                json.dumps(config_manager._public_values(config_manager.DEFAULT_CONFIG))
+            )
+            original.pop("UI_CUSTOM_COLORS", None)
+            original["REFRESH_INTERVAL"] = 75_000
+            config_path.write_text(json.dumps(original), encoding="utf-8")
+            draft = {
+                **config_manager.DEFAULT_CONFIG,
+                "REFRESH_INTERVAL": 5_000,
+                "DEEPSEEK_API_KEY": "connection-test-draft",
+            }
+            colors = ["#D14C2F", "#FFFFFF", "#D14C2F", "#198754"]
+            with (
+                patch.object(config_manager, "CONFIG_DIR", root),
+                patch.object(config_manager, "CONFIG_PATH", config_path),
+                patch.object(config_manager, "_config", draft),
+                patch.object(config_manager, "_write_credential") as write_credential,
+                patch.object(config_manager, "_read_credential", return_value=""),
+            ):
+                config_manager.save_ui_custom_colors(colors)
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+                write_credential.assert_not_called()
+                self.assertEqual(saved, {**original, "UI_CUSTOM_COLORS": colors})
+                self.assertEqual(config_manager.get("UI_CUSTOM_COLORS"), colors)
+                self.assertEqual(config_manager.get("DEEPSEEK_API_KEY"), "connection-test-draft")
+
+                # 清空内存再读盘，且后续保存其他设置不能把色板列表转成字符串或覆盖掉。
+                config_manager._config = config_manager.DEFAULT_CONFIG.copy()
+                self.assertEqual(config_manager.load_config()["UI_CUSTOM_COLORS"], colors)
+                config_manager.save_ui_appearance("light", "#198754", 90)
+                config_manager.save_config({"REFRESH_INTERVAL": 80_000})
+                self.assertEqual(config_manager.load_config()["UI_CUSTOM_COLORS"], colors)
+
+    def test_custom_colors_save_failure_preserves_disk_and_memory(self):
+        temp_root = Path.cwd() / ".test-appdata" / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            config_path = Path(directory) / "config.json"
+            original = {**config_manager.DEFAULT_CONFIG, "UI_CUSTOM_COLORS": ["#198754"]}
+            original_text = json.dumps(config_manager._public_values(original))
+            config_path.write_text(original_text, encoding="utf-8")
+            with (
+                patch.object(config_manager, "CONFIG_PATH", config_path),
+                patch.object(config_manager, "_config", original),
+                patch.object(Path, "replace", side_effect=OSError("disk full")),
+                patch.object(config_manager, "logger"),
+            ):
+                with self.assertRaises(OSError):
+                    config_manager.save_ui_custom_colors(["#D14C2F"])
+                self.assertEqual(config_manager.all_config(), original)
+
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original_text)
+            self.assertFalse(config_path.with_name("config.json.appearance.tmp").exists())
 
     def test_backups_exclude_secrets_and_are_limited(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"

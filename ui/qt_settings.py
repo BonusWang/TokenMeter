@@ -852,14 +852,34 @@ class SettingsWindow(QDialog):
         )
 
     def _choose_accent_color(self) -> None:
+        # Qt 色板是进程级状态；按槽位恢复，旧配置缺少的槽位保持默认白色。
+        saved_colors = config_manager.get("UI_CUSTOM_COLORS", [])
+        previous_colors = []
+        for index in range(QColorDialog.customCount()):
+            color = QColor(saved_colors[index] if index < len(saved_colors) else "#FFFFFF")
+            QColorDialog.setCustomColor(index, color)
+            previous_colors.append(color.name(QColor.NameFormat.HexRgb).upper())
         initial = QColor(self.accent_color_edit.text().strip())
         selected = QColorDialog.getColor(initial, self, "选择主题主色")
-        if not selected.isValid():
-            return
-        self.accent_color_edit.setText(
-            selected.name(QColor.NameFormat.HexRgb).upper()
-        )
-        self._commit_appearance()
+        if selected.isValid():
+            self.accent_color_edit.setText(
+                selected.name(QColor.NameFormat.HexRgb).upper()
+            )
+            self._commit_appearance()
+
+        # “添加到自定义颜色”独立于选择主题色，即使取消选色也要保留新增色板。
+        custom_colors = [
+            QColorDialog.customColor(index).name(QColor.NameFormat.HexRgb).upper()
+            for index in range(QColorDialog.customCount())
+        ]
+        if custom_colors != previous_colors:
+            try:
+                config_manager.save_ui_custom_colors(custom_colors)
+            except Exception as exc:
+                self.set_theme_feedback(f"自定义颜色保存失败：{exc}", "danger")
+            else:
+                if not selected.isValid():
+                    self.set_theme_feedback("自定义颜色已保存。", "success")
 
     def _reset_appearance(self) -> None:
         base = LIGHT_THEME if self._resolved_theme == "light" else DARK_THEME
