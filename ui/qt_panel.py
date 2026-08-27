@@ -2473,7 +2473,8 @@ class MainPanel(QFrame):
         self.header.setObjectName("panelHeader")
         self.header.setFixedHeight(HEADER_HEIGHT)
         header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(14, 7, 12, 7)
+        # 42px 标题栏需容纳 32px 工具按钮，上下各留 5px 才不会把整行控件向下挤。
+        header_layout.setContentsMargins(14, 5, 12, 5)
         header_layout.setSpacing(8)
 
         logo = QLabel()
@@ -2506,9 +2507,25 @@ class MainPanel(QFrame):
         self.pricing_badge.hide()
         header_layout.addWidget(logo)
         header_layout.addWidget(self._title_label)
+        self.settings_back_button = QToolButton()
+        self.settings_back_button.setObjectName("settingsBackButton")
+        self.settings_back_button.setText("返回面板")
+        self.settings_back_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        self.settings_back_button.setIconSize(QSize(14, 14))
+        # 与平台切换控件共用尺寸，避免切换到设置时标题栏高度和节奏发生变化。
+        self.settings_back_button.setFixedSize(132, 28)
+        self.settings_back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.settings_back_button.setAccessibleName("返回面板")
+        self.settings_back_button.hide()
+        header_layout.addWidget(self.settings_back_button, 0, Qt.AlignmentFlag.AlignVCenter)
         header_layout.addWidget(self.provider_quick_combo)
         header_layout.addWidget(self.pricing_badge)
         header_layout.addStretch(1)
+        self.settings_save_status = QLabel("自动保存")
+        self.settings_save_status.setObjectName("settingsSaveStatus")
+        self.settings_save_status.setProperty("tone", "muted")
+        self.settings_save_status.hide()
+        header_layout.addWidget(self.settings_save_status)
 
         self.theme_segment = QFrame()
         self.theme_segment.setObjectName("themeSegment")
@@ -2747,7 +2764,10 @@ class MainPanel(QFrame):
         footer.addStretch(1)
         footer.addWidget(self.updated_text)
         content.addWidget(footer_widget)
-        root.addWidget(body, 1)
+        # 概览和设置共用面板主体，保留顶部拖动、主题切换和收起入口。
+        self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(body)
+        root.addWidget(self.content_stack, 1)
 
         configured_mode = str(config_manager.get("UI_THEME", "dark"))
         self.set_theme_mode(configured_mode, current_theme().name)
@@ -2759,6 +2779,34 @@ class MainPanel(QFrame):
             pass
         self._refresh_icons()
         self._set_activity_view("annual")
+
+    def show_settings(self, settings: QWidget) -> None:
+        if self.content_stack.indexOf(settings) < 0:
+            self.content_stack.addWidget(settings)
+        self.content_stack.setCurrentWidget(settings)
+        self.provider_quick_combo.hide()
+        self.pricing_badge.hide()
+        self.settings_button.hide()
+        self.settings_back_button.show()
+        self.settings_save_status.show()
+
+    def show_overview(self) -> None:
+        self.content_stack.setCurrentIndex(0)
+        self.settings_back_button.hide()
+        self.settings_save_status.hide()
+        self.provider_quick_combo.show()
+        self.pricing_badge.setVisible(bool(self.pricing_badge.text()))
+        self.settings_button.show()
+
+    def set_settings_save_status(self, message: str, tone: str) -> None:
+        # 详细错误留在提示中，不能把共用标题栏撑宽并挤掉收起入口。
+        text = "未保存" if tone == "danger" else "已自动保存" if tone == "success" else message
+        self.settings_save_status.setText(text)
+        self.settings_save_status.setToolTip(message)
+        self.settings_save_status.setAccessibleDescription(message)
+        self.settings_save_status.setProperty("tone", "muted" if tone == "success" else tone)
+        self.settings_save_status.style().unpolish(self.settings_save_status)
+        self.settings_save_status.style().polish(self.settings_save_status)
 
     @property
     def minute_chart(self) -> MinuteUsageChart:
@@ -3152,7 +3200,7 @@ class MainPanel(QFrame):
     def set_pricing_state(
         self, enabled: bool, is_peak: bool = False, label: str = "", tooltip: str = ""
     ) -> None:
-        self.pricing_badge.setVisible(enabled)
+        self.pricing_badge.setVisible(enabled and self.content_stack.currentIndex() == 0)
         if not enabled:
             self.pricing_badge.setText("")
             self.pricing_badge.setToolTip("")

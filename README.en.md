@@ -75,7 +75,7 @@ python main.py
 1. Start the app and click the floating widget to open the panel.
 2. Open Settings and select DeepSeek or Xiaomi MiMo.
 3. Enter a Bearer token, Cookie, or optional DeepSeek API key. For MiMo, “Get MiMo Cookie” also extracts `api-platform_ph` automatically.
-4. Save and refresh. The default refresh interval is 60 seconds.
+4. Changes save automatically, with save status shown in the header. The default refresh interval is 60 seconds.
 
 `examples/config.example.py` only documents fields; do not copy it to `config.py`. A legacy `config.py` is migrated on first launch when possible.
 

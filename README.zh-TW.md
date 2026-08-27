@@ -73,7 +73,7 @@ python main.py
 1. 啟動程式並點擊浮動小工具展開面板。
 2. 開啟「設定」，選擇 DeepSeek 或 Xiaomi MiMo。
 3. 填寫 Bearer Token、Cookie 或選用的 DeepSeek API Key。MiMo 的「一鍵取得 MiMo Cookie」會自動擷取 `api-platform_ph`。
-4. 儲存並重新整理。預設重新整理間隔為 60 秒。
+4. 修改後自動儲存，頂部顯示儲存狀態；預設重新整理間隔為 60 秒。
 
 `examples/config.example.py` 僅展示欄位，不必複製為 `config.py`。舊版 `config.py` 會在首次啟動時嘗試遷移。
 

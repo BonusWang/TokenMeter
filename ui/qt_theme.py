@@ -329,13 +329,35 @@ QTabBar::tab:selected {{
     border-bottom-color: {tokens.accent};
 }}
 QTabBar::tab:hover {{ color: {tokens.text}; }}
+QTabWidget#settingsTabs::pane {{ border: 0; top: 0; }}
+QTabWidget#settingsTabs QTabBar {{ background: transparent; font-size: 13px; }}
+QFrame#settingsSection {{ background: transparent; border: 0; }}
+QDialog#settingsPage QFrame#settingsCard {{ border-color: {divider_color}; }}
+QDialog#settingsPage QLineEdit, QDialog#settingsPage QPlainTextEdit,
+QDialog#settingsPage QComboBox, QDialog#settingsPage QSpinBox, QDialog#settingsPage QTimeEdit {{
+    border: 1px solid {divider_color};
+    border-radius: 9px;
+}}
+QDialog#settingsPage QLineEdit:focus, QDialog#settingsPage QPlainTextEdit:focus,
+QDialog#settingsPage QComboBox:focus, QDialog#settingsPage QSpinBox:focus,
+QDialog#settingsPage QTimeEdit:focus {{ border-color: {tokens.accent}; }}
+QDialog#settingsPage QComboBox {{ padding-right: 28px; }}
+QDialog#settingsPage QComboBox::drop-down {{ border: 0; width: 24px; }}
+QFrame#settingsSwitchRow {{
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid {divider_color};
+}}
+QLabel#settingsRowTitle {{ font-size: 14px; font-weight: 600; }}
+QLabel#settingsSaveStatus {{ font-size: 11px; }}
 QLabel#panelTitle {{ color: {tokens.value}; font-size: 17px; font-weight: 700; }}
-QComboBox#headerProviderCombo {{
+QComboBox#headerProviderCombo, QToolButton#settingsBackButton {{
     background: transparent;
     border: 0;
     padding: 0;
     font-size: 12px;
 }}
+QToolButton#settingsBackButton:focus {{ background: {tokens.accent_soft}; }}
 QFrame#headerProviderPopup {{
     background: transparent;
     border: 0;

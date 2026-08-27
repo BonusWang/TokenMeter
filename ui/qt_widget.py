@@ -581,19 +581,19 @@ class FloatingWidget(QWidget):
             and not self._transitioning
             and bool(config_manager.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))
         ):
-            # Defer until Qt has finished activating a possible child dialog.
-            # This distinguishes a real outside click from opening Settings.
+            # Defer until Qt has finished activating a possible picker or popup.
             QTimer.singleShot(0, self._collapse_after_deactivation)
         return super().event(event)
 
     def _collapse_after_deactivation(self) -> None:
-        # 失焦事件会在打开设置时一并触发；延迟后再次检查，避免误收起面板。
+        # 设置页沿用面板的失焦收起规则，但操作文件/颜色对话框或下拉菜单时不能误收起。
         if (
             bool(config_manager.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))
             and self._expanded
             and not self._transitioning
             and not self._drag_started
-            and not self._has_settings_child()
+            and QApplication.activeModalWidget() is None
+            and QApplication.activePopupWidget() is None
             and not self.isActiveWindow()
         ):
             self.collapse_panel()
@@ -928,16 +928,20 @@ class FloatingWidget(QWidget):
         provider_id: str | None = None,
         start_cookie_acquisition: bool = False,
     ) -> None:
+        panel = self._ensure_panel()
         if self._settings_window is None:
             from ui.qt_settings import SettingsWindow
 
-            # Reuse the same dialog so repeated opens do not duplicate signal
-            # connections or leave hidden child windows behind.
+            # 复用内嵌设置页，保留未保存草稿，避免重复连接信号。
             self._settings_window = SettingsWindow(
-                self,
+                panel,
                 on_saved=self._on_config_saved,
                 update_controller=self._update_controller,
+                embedded=True,
             )
+            self._settings_window.finished.connect(panel.show_overview)
+            panel.settings_back_button.clicked.connect(self._settings_window.reject)
+            self._settings_window.save_state_changed.connect(panel.set_settings_save_status)
             self._settings_window.theme_requested.connect(self._request_theme_change)
             self._settings_window.appearance_preview_requested.connect(
                 self._preview_appearance_change
@@ -947,13 +951,12 @@ class FloatingWidget(QWidget):
             )
             controller = theme_controller()
             self._settings_window.set_theme_mode(controller.mode, controller.resolved)
-            # 设置窗口作为普通对话框，不应继承主窗口的置顶标志；
-            # 否则会和悬浮球一起把其它应用压在下面。
-            self._settings_window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
-        if not self._settings_window.isVisible():
-            self._settings_window.show()
-        self._settings_window.raise_()
-        self._settings_window.activateWindow()
+        panel.show_settings(self._settings_window)
+        self.expand_panel()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._settings_window.setFocus(Qt.FocusReason.OtherFocusReason)
         if provider_id:
             self._settings_window.open_provider(provider_id, start_cookie_acquisition)
 
@@ -1462,6 +1465,8 @@ class FloatingWidget(QWidget):
                 self.activateWindow()
 
     def closeEvent(self, event) -> None:
+        if self._settings_window is not None:
+            self._settings_window.flush_pending_saves()
         if self._ball_size_save_timer.isActive():
             self._ball_size_save_timer.stop()
             self._save_ball_size()

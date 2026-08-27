@@ -14,8 +14,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Union
 
-from PySide6.QtCore import QSignalBlocker, Qt, QThread, QTime, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
+from PySide6.QtCore import QRectF, QSignalBlocker, QSize, Qt, QThread, QTime, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
+    QStyle,
+    QTabBar,
     QTabWidget,
     QTimeEdit,
     QVBoxLayout,
@@ -45,10 +47,94 @@ from config import runtime as config_manager
 from core.autostart import AutostartError, sync_autostart
 from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from data.store import TokenData
-from ui.qt_theme import DARK_THEME, LIGHT_THEME, theme_controller
+from ui.qt_theme import DARK_THEME, LIGHT_THEME, current_theme, fluent_icon, theme_controller
 from ui.qt_update import AppUpdateController
 
 _CARD_PADDING = 18
+
+
+class _SettingsComboBox(QComboBox):
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        # 去掉原生箭头按钮的直角底板后，复用项目的 Fluent 箭头保留清晰的下拉提示。
+        icon = fluent_icon("chevron-down", 14)
+        if icon.isNull():
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        painter = QPainter(self)
+        if not self.isEnabled():
+            painter.setOpacity(0.45)
+        icon.paint(painter, self.width() - 24, (self.height() - 14) // 2, 14, 14)
+
+
+class _SettingsTabBar(QTabBar):
+    HEIGHT = 42
+    INSET = 4
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDrawBase(False)
+        self.setExpanding(True)
+        self.setFixedHeight(self.HEIGHT)
+
+    def tabSizeHint(self, index: int) -> QSize:
+        return QSize(self.fontMetrics().horizontalAdvance(self.tabText(index)) + 24, self.HEIGHT)
+
+    def paintEvent(self, event) -> None:
+        # 参考 NutriTime 的完整轨道和内缩胶囊；统一绘制可避免原生页签残留直角底板。
+        tokens = current_theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        border = QColor(tokens.border)
+        border.setAlpha(45)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(QColor(tokens.surface))
+        track = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.drawRoundedRect(track, track.height() / 2, track.height() / 2)
+        for index in range(self.count()):
+            rect = QRectF(self.tabRect(index)).adjusted(self.INSET, self.INSET, -self.INSET, -self.INSET)
+            selected = index == self.currentIndex()
+            if selected:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(tokens.accent_soft))
+                painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+                if self.hasFocus():
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.setPen(QPen(QColor(tokens.accent), 1))
+                    painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+            painter.setPen(QColor(tokens.accent_text if selected else tokens.subtext))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.tabText(index))
+
+
+class _SettingsSwitch(QCheckBox):
+    def __init__(self, text: str):
+        super().__init__(text)
+        # 保留复选框的键盘和无障碍语义，仅把重复的二态控件绘制成开关。
+        self.setAccessibleName(text)
+        self.setFixedSize(50, 28)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event) -> None:
+        tokens = current_theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            painter.setOpacity(0.45)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(tokens.accent if self.isChecked() else tokens.disabled))
+        painter.drawRoundedRect(QRectF(2, 3, 46, 22), 11, 11)
+        # on_accent 是文字对比色，浅色主色会变成黑色；开关圆钮保持白色才能维持一致外观。
+        painter.setBrush(QColor("#FFFFFF"))
+        thumb_border = QColor(tokens.border)
+        thumb_border.setAlpha(45)
+        painter.setPen(QPen(thumb_border, 0.5))
+        painter.drawEllipse(QRectF(28 if self.isChecked() else 4, 5, 18, 18))
+        if self.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(tokens.accent), 1))
+            painter.drawRoundedRect(QRectF(0.5, 0.5, 49, 27), 13, 13)
 
 
 class ConnectionWorker(QThread):
@@ -125,18 +211,26 @@ class SettingsWindow(QDialog):
     theme_requested = Signal(str)
     appearance_preview_requested = Signal(str, str, int)
     appearance_requested = Signal(str, str, int)
+    save_state_changed = Signal(str, str)
 
     def __init__(
         self,
         parent=None,
         on_saved: Callable[[], None] | None = None,
         update_controller: AppUpdateController | None = None,
+        embedded: bool = False,
     ):
         super().__init__(parent)
+        self.setObjectName("settingsPage")
         self.setWindowTitle(f"{APP_DISPLAY_NAME} 设置")
         self.setModal(False)
-        self.setMinimumWidth(560)
-        self.setMaximumWidth(720)
+        if embedded:
+            # 在主面板内作为普通控件显示，避免生成继承悬浮球置顶状态的独立窗口。
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self.setStyleSheet("QDialog#settingsPage { background: transparent; }")
+        else:
+            self.setMinimumWidth(560)
+            self.setMaximumWidth(720)
         self.on_saved = on_saved
         self.update_controller = update_controller
         self._worker: ConnectionWorker | None = None
@@ -149,28 +243,48 @@ class SettingsWindow(QDialog):
         self._provider_drafts: dict[str, dict[str, str]] = {}
         self._resolved_theme = theme_controller().resolved
         self._syncing_appearance = False
+        self._autosave_ready = False
+        self._saving = False
+        self._save_pending = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(650)
+        self._save_timer.timeout.connect(self._auto_save)
         self._appearance_save_timer = QTimer(self)
         self._appearance_save_timer.setSingleShot(True)
         self._appearance_save_timer.setInterval(200)
         self._appearance_save_timer.timeout.connect(self._commit_appearance)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(24, 14, 24, 18)
+        root.setSpacing(8)
+        self.save_feedback = QLabel("自动保存", self)
+        self.save_feedback.setObjectName("settingsSaveStatus")
+        self.save_feedback.setMaximumWidth(260)
+        self.save_feedback.setProperty("tone", "muted")
+        # 内嵌页的返回和保存状态由共用标题栏承载，不再占用一整行内容空间。
+        if embedded:
+            self.save_feedback.hide()
+        else:
+            root.addWidget(self.save_feedback, 0, Qt.AlignmentFlag.AlignRight)
         self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("settingsTabs")
+        self.tabs.setTabBar(_SettingsTabBar(self.tabs))
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setExpanding(True)
 
-        # The account tab is the only long page. Keeping the footer outside it
-        # prevents Save/Cancel from scrolling away while users edit Cookies.
+        # 每个分类独立滚动，长凭据和目录信息不会挤压主面板的导航。
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.content = QWidget()
         self.scroll_area.setWidget(self.content)
         content_layout = QVBoxLayout(self.content)
-        content_layout.setContentsMargins(6, 4, 6, 8)
+        content_layout.setContentsMargins(0, 20, 0, 8)
         content_layout.setSpacing(14)
-        title = QLabel("账户与凭据")
-        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        title = QLabel("连接数据平台；凭据仅保存在本机，修改后自动保存。")
+        title.setProperty("tone", "muted")
+        title.setWordWrap(True)
 
         # Provider picker — single dropdown.
         picker_row = QHBoxLayout()
@@ -178,7 +292,7 @@ class SettingsWindow(QDialog):
         picker_row.setSpacing(8)
         picker_label = QLabel("数据来源")
         picker_label.setStyleSheet("font-size: 13px; font-weight: 500;")
-        self.provider_combo = QComboBox()
+        self.provider_combo = _SettingsComboBox()
         for provider_id, provider_name in list_providers():
             display_name = (
                 provider_name
@@ -250,37 +364,25 @@ class SettingsWindow(QDialog):
         peak_hint.setProperty("tone", "muted")
         peak_hint.setStyleSheet("font-size: 12px;")
         peak_layout.addWidget(peak_hint)
-        content_layout.addWidget(self.deepseek_peak_pricing_card)
         content_layout.addLayout(connection_actions)
         content_layout.addWidget(self.connection_feedback)
         content_layout.addStretch(1)
-        self.tabs.addTab(self.scroll_area, "账户与凭据")
+        self.tabs.addTab(self.scroll_area, "账户连接")
 
-        runtime_page = QWidget()
-        runtime_layout = QVBoxLayout(runtime_page)
-        runtime_layout.setContentsMargins(6, 8, 6, 8)
-        runtime_layout.setSpacing(14)
-        runtime_title = QLabel("运行行为")
-        runtime_title.setStyleSheet("font-size: 18px; font-weight: 700;")
-        runtime_layout.addWidget(runtime_title)
-        runtime_hint = QLabel("控制数据刷新，以及悬浮球和面板在桌面的显示方式。")
-        runtime_hint.setWordWrap(True)
-        runtime_hint.setProperty("tone", "muted")
-        runtime_hint.setStyleSheet("font-size: 12px;")
-        runtime_layout.addWidget(runtime_hint)
+        appearance_layout = self._add_settings_page("外观", "调整主题与面板外观，修改立即应用并保存。")
 
         appearance_card = QFrame()
-        appearance_card.setObjectName("settingsCard")
+        appearance_card.setObjectName("settingsSection")
         appearance_form = QFormLayout(appearance_card)
         appearance_form.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
         appearance_form.setHorizontalSpacing(16)
         appearance_form.setVerticalSpacing(10)
-        self.theme_combo = QComboBox()
+        self.theme_combo = _SettingsComboBox()
         self.theme_combo.addItem("跟随系统", "system")
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("深色", "dark")
         self.theme_combo.setToolTip(
-            "主题与调色盘会立即应用并保存，取消设置不会回滚主题外观"
+            "主题与调色盘会立即应用并保存"
         )
         appearance_form.addRow("外观主题", self.theme_combo)
 
@@ -329,10 +431,34 @@ class SettingsWindow(QDialog):
         self.reset_appearance_button = QPushButton("恢复当前主题默认配置")
         self.reset_appearance_button.setToolTip("只重置当前解析出的浅色或深色主题")
         appearance_form.addRow("", self.reset_appearance_button)
-        runtime_layout.addWidget(appearance_card)
+        appearance_layout.addWidget(appearance_card)
+        appearance_layout.addStretch(1)
+
+        behavior_layout = self._add_settings_page(
+            "悬浮与启动", "控制悬浮球的显示行为以及随系统启动的自动运行选项。"
+        )
+        self.edge_hide_check = _SettingsSwitch("贴边自动隐藏")
+        self._add_switch_row(
+            behavior_layout, "贴边自动隐藏", "靠近屏幕边缘时隐藏悬浮球", self.edge_hide_check
+        )
+        self.panel_auto_collapse_check = _SettingsSwitch("失焦自动收起")
+        self._add_switch_row(
+            behavior_layout, "失焦自动收起", "点击其他应用时，面板和设置一起收起",
+            self.panel_auto_collapse_check,
+        )
+        self.autostart_check = _SettingsSwitch(f"开机后自动运行 {APP_DISPLAY_NAME}")
+        self._add_switch_row(
+            behavior_layout, "开机自动运行", f"登录 Windows 后启动 {APP_DISPLAY_NAME}",
+            self.autostart_check,
+        )
+        behavior_layout.addStretch(1)
+
+        runtime_layout = self._add_settings_page(
+            "采集与统计", "设置数据刷新频率、后台采集平台与分时统计方式。"
+        )
 
         runtime_card = QFrame()
-        runtime_card.setObjectName("settingsCard")
+        runtime_card.setObjectName("settingsSection")
         runtime_layout.addWidget(runtime_card)
         runtime_form = QFormLayout(runtime_card)
         runtime_form.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
@@ -360,29 +486,28 @@ class SettingsWindow(QDialog):
             "仅合并分时图的展示粒度，底层分钟数据和刷新频率保持不变"
         )
         runtime_form.addRow("分时统计间隔", self.minute_usage_interval_minutes)
-        self.minute_usage_chart_type = QComboBox()
+        self.minute_usage_chart_type = _SettingsComboBox()
         self.minute_usage_chart_type.addItem("柱状图", "bar")
         self.minute_usage_chart_type.addItem("折线图", "line")
         self.minute_usage_chart_type.setToolTip("切换今日分时主图和全天导航的展示样式")
         runtime_form.addRow("分时图表样式", self.minute_usage_chart_type)
+        runtime_layout.addWidget(self.deepseek_peak_pricing_card)
+        runtime_layout.addStretch(1)
+
+        storage_layout = self._add_settings_page(
+            "数据存储", "管理本地记录与应用数据目录；目录迁移在下次启动时执行。"
+        )
+        storage_form = QFormLayout()
+        storage_form.setHorizontalSpacing(16)
+        storage_form.setVerticalSpacing(14)
+        storage_layout.addLayout(storage_form)
         self.minute_usage_retention_days = QSpinBox()
         self.minute_usage_retention_days.setRange(1, 365)
         self.minute_usage_retention_days.setSuffix(" 天")
         self.minute_usage_retention_days.setToolTip(
             "界面展示最近 N 天分时估算数据；本地数据保留双倍宽限期，超过 2N 天后才自动清理"
         )
-        runtime_form.addRow("分时数据保存天数", self.minute_usage_retention_days)
-        self.edge_hide_check = QCheckBox("贴边自动隐藏")
-        self.edge_hide_check.setToolTip("拖拽悬浮球到屏幕边缘后自动隐藏，鼠标移入时显示")
-        runtime_form.addRow("贴边隐藏", self.edge_hide_check)
-        self.panel_auto_collapse_check = QCheckBox("点击面板外部时自动收起")
-        self.panel_auto_collapse_check.setToolTip(
-            "点击其它应用使面板失焦时收起面板并显示悬浮球"
-        )
-        runtime_form.addRow("面板自动收起", self.panel_auto_collapse_check)
-        self.autostart_check = QCheckBox(f"开机后自动运行 {APP_DISPLAY_NAME}")
-        self.autostart_check.setToolTip("使用当前 Windows 用户的启动项，无需管理员权限")
-        runtime_form.addRow("开机自启", self.autostart_check)
+        storage_form.addRow("分时数据保留天数", self.minute_usage_retention_days)
         data_dir_row = QWidget()
         data_dir_layout = QHBoxLayout(data_dir_row)
         data_dir_layout.setContentsMargins(0, 0, 0, 0)
@@ -397,17 +522,19 @@ class SettingsWindow(QDialog):
         data_dir_layout.addWidget(self.data_dir_edit, 1)
         data_dir_layout.addWidget(self.data_dir_browse_button)
         data_dir_layout.addWidget(self.data_dir_default_button)
-        runtime_form.addRow("应用数据目录", data_dir_row)
+        storage_form.addRow("应用数据目录", data_dir_row)
         self.data_dir_status = QLabel()
         self.data_dir_status.setWordWrap(True)
         self.data_dir_status.setProperty("tone", "muted")
         self.data_dir_status.setStyleSheet("font-size: 12px;")
-        runtime_form.addRow("", self.data_dir_status)
-        runtime_layout.addStretch(1)
-        self.tabs.addTab(runtime_page, "运行行为")
+        storage_form.addRow("", self.data_dir_status)
+        storage_layout.addStretch(1)
 
+        update_page_layout = self._add_settings_page(
+            "更新与关于", "管理版本更新，查看项目主页与反馈入口。"
+        )
         self.update_card = QFrame()
-        self.update_card.setObjectName("settingsCard")
+        self.update_card.setObjectName("settingsSection")
         update_layout = QVBoxLayout(self.update_card)
         update_layout.setContentsMargins(_CARD_PADDING, 14, _CARD_PADDING, 14)
         update_layout.setSpacing(10)
@@ -419,8 +546,8 @@ class SettingsWindow(QDialog):
         update_form.setHorizontalSpacing(16)
         update_form.setVerticalSpacing(8)
         self.current_version_label = QLabel()
-        self.auto_check_updates = QCheckBox("启动后自动检查")
-        self.update_channel_combo = QComboBox()
+        self.auto_check_updates = _SettingsSwitch("启动后自动检查")
+        self.update_channel_combo = _SettingsComboBox()
         self.update_channel_combo.addItem("正式版", "stable")
         self.update_channel_combo.addItem("预发布版", "prerelease")
         self.update_status_label = QLabel()
@@ -454,33 +581,10 @@ class SettingsWindow(QDialog):
         project_hint.setStyleSheet("font-size: 12px;")
         update_layout.addWidget(project_hint)
 
-        update_page = QWidget()
-        update_page_layout = QVBoxLayout(update_page)
-        update_page_layout.setContentsMargins(6, 8, 6, 8)
-        update_page_layout.setSpacing(14)
-        update_title = QLabel("软件更新")
-        update_title.setStyleSheet("font-size: 18px; font-weight: 700;")
-        update_page_layout.addWidget(update_title)
         update_page_layout.addWidget(self.update_card)
         update_page_layout.addStretch(1)
-        self.tabs.addTab(update_page, "软件更新")
 
         root.addWidget(self.tabs, 1)
-        self.save_feedback = QLabel()
-        self.save_feedback.setWordWrap(True)
-        self.save_feedback.setProperty("tone", "muted")
-        self.save_feedback.setStyleSheet("font-size: 12px;")
-        root.addWidget(self.save_feedback)
-        actions = QHBoxLayout()
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(self.reject)
-        save = QPushButton("保存并生效")
-        save.setObjectName("primaryButton")
-        save.clicked.connect(self._save)
-        actions.addStretch(1)
-        actions.addWidget(cancel)
-        actions.addWidget(save)
-        root.addLayout(actions)
         self.tabs.currentChanged.connect(lambda _index: self._sync_window_size())
         self._load_values()
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
@@ -492,6 +596,117 @@ class SettingsWindow(QDialog):
         theme_controller().changed.connect(self._on_theme_state_changed)
         self._bind_update_controller()
         self._sync_window_size()
+        self._connect_autosave()
+        self._autosave_ready = True
+
+    def _add_settings_page(self, title: str, description: str) -> QVBoxLayout:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 20, 0, 8)
+        layout.setSpacing(12)
+        hint = QLabel(description)
+        hint.setWordWrap(True)
+        hint.setProperty("tone", "muted")
+        layout.addWidget(hint)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, title)
+        return layout
+
+    @staticmethod
+    def _add_switch_row(layout, title: str, hint: str, control: QCheckBox) -> None:
+        row = QFrame()
+        row.setObjectName("settingsSwitchRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 16, 8, 16)
+        row_layout.setSpacing(20)
+        labels = QVBoxLayout()
+        labels.setSpacing(8)
+        label = QLabel(title)
+        label.setObjectName("settingsRowTitle")
+        label.setBuddy(control)
+        detail = QLabel(hint)
+        detail.setWordWrap(True)
+        detail.setProperty("tone", "muted")
+        labels.addWidget(label)
+        labels.addWidget(detail)
+        row_layout.addLayout(labels, 1)
+        row_layout.addWidget(control)
+        control.setToolTip(hint)
+        layout.addWidget(row)
+
+    def _connect_autosave(self) -> None:
+        # 只监听用户操作，加载配置、切换草稿和后台同步凭据不能再次触发写盘。
+        for control in self.findChildren(QCheckBox):
+            control.clicked.connect(self._schedule_save)
+        for control in self.findChildren(QComboBox):
+            if control is not self.theme_combo:
+                control.activated.connect(self._schedule_save)
+        for control in self.findChildren(QSpinBox):
+            control.setKeyboardTracking(False)
+            control.valueChanged.connect(
+                lambda _value, target=control: self._schedule_save() if target.hasFocus() else None
+            )
+            control.editingFinished.connect(self._schedule_save)
+        for control in self.findChildren(QTimeEdit):
+            control.setKeyboardTracking(False)
+            control.timeChanged.connect(
+                lambda _value, target=control: self._schedule_save() if target.hasFocus() else None
+            )
+            control.editingFinished.connect(self._schedule_save)
+
+    def _schedule_save(self, *_args) -> None:
+        if not self._autosave_ready:
+            return
+        self._save_pending = True
+        self._set_feedback(self.save_feedback, "等待保存…", "muted")
+        self._save_timer.start()
+
+    def _auto_save(self) -> None:
+        # 确认地址等模态对话框会启动嵌套事件循环，避免定时器重入并重复弹窗。
+        if self._saving:
+            self._save_timer.start()
+            return
+        self._save_timer.stop()
+        base_editor = self._provider_widgets.get("BASE")
+        if isinstance(base_editor, QLineEdit) and base_editor.hasFocus() and base_editor.isModified():
+            # 地址尚在输入时不触发信任确认，等 editingFinished 再保存完整地址。
+            return
+        self._save_pending = False
+        self._saving = True
+        try:
+            values = self._values()
+            current = config_manager.all_config()
+            scheduled_dir = config_manager.pending_data_dir() or config_manager.CONFIG_DIR
+            if (
+                all(current.get(key) == value for key, value in values.items())
+                and Path(self._selected_data_dir).resolve(strict=False)
+                == Path(scheduled_dir).resolve(strict=False)
+            ):
+                self._set_feedback(self.save_feedback, "已自动保存", "success")
+                return
+            self._save()
+        except Exception as exc:
+            self._set_feedback(self.save_feedback, f"自动保存失败：{exc}", "danger")
+        finally:
+            self._saving = False
+
+    def flush_pending_saves(self) -> None:
+        # 返回或退出时不能丢失防抖窗口内的最后一次修改。
+        focused = self.focusWidget()
+        if focused is not None:
+            # 先完成输入框的失焦提交，避免关闭后才排入新的保存定时器。
+            focused.clearFocus()
+        if self._appearance_save_timer.isActive():
+            self._commit_appearance()
+        if self._save_pending:
+            self._auto_save()
+
+    def reject(self) -> None:
+        self.flush_pending_saves()
+        super().reject()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -657,13 +872,15 @@ class SettingsWindow(QDialog):
     def set_theme_feedback(self, message: str, tone: str = "muted") -> None:
         self._set_feedback(self.save_feedback, message, tone)
 
-    @staticmethod
-    def _set_feedback(label: QLabel, message: str, tone: str) -> None:
+    def _set_feedback(self, label: QLabel, message: str, tone: str) -> None:
         label.setProperty("tone", tone)
         label.setText(message)
+        label.setToolTip(message)
         label.style().unpolish(label)
         label.style().polish(label)
         label.update()
+        if label is self.save_feedback:
+            self.save_state_changed.emit(message, tone)
 
     def open_provider(self, provider_id: str, start_cookie_acquisition: bool = False) -> None:
         """Focus a provider and optionally begin the browser flow from a tray alert."""
@@ -677,6 +894,9 @@ class SettingsWindow(QDialog):
             QTimer.singleShot(0, self._begin_cookie_acquire)
 
     def _sync_window_size(self) -> None:
+        # 内嵌设置由主面板布局分配空间，切换页签或平台时不能自行调整窗口尺寸。
+        if not self.isWindow():
+            return
         self.content.adjustSize()
         self.tabs.adjustSize()
         content_size = self.tabs.sizeHint()
@@ -799,6 +1019,8 @@ class SettingsWindow(QDialog):
         if self._rendered_provider_id != provider_id:
             if saved_automatically and self.on_saved:
                 self.on_saved()
+            elif not saved_automatically:
+                self._schedule_save()
             return
         for field, value in values.items():
             widget = self._provider_widgets.get(field)
@@ -814,10 +1036,12 @@ class SettingsWindow(QDialog):
         self._cookie_acquire_status.setText(
             f"{self._credential_acquire_label} 已验证并安全保存。"
             if saved_automatically
-            else f"{self._credential_acquire_label} 已自动填入，请保存设置。"
+            else f"{self._credential_acquire_label} 已自动填入，正在保存。"
         )
         if saved_automatically and self.on_saved:
             self.on_saved()
+        elif not saved_automatically:
+            self._schedule_save()
 
     def sync_persisted_cookie(self, provider_id: str, cookie_text: str) -> None:
         """Keep an open settings draft aligned with an externally renewed cookie."""
@@ -980,7 +1204,21 @@ class SettingsWindow(QDialog):
                             ph_widget.setText(ph_in_cookie)
         self._rendered_provider_id = provider_id
         self.deepseek_peak_pricing_card.setVisible(provider_id == "deepseek")
+        for editor in self._provider_widgets.values():
+            if isinstance(editor, QPlainTextEdit):
+                editor.textChanged.connect(
+                    lambda target=editor: self._schedule_save() if target.document().isModified() else None
+                )
+            else:
+                editor.textEdited.connect(self._schedule_save)
+                editor.editingFinished.connect(lambda target=editor: self._finish_credential_edit(target))
         self._sync_window_size()
+
+    def _finish_credential_edit(self, editor: QLineEdit) -> None:
+        # setText 也可能引发失焦信号；只提交真实输入，避免回填草稿或测试数据时误保存。
+        if editor.isModified():
+            editor.setModified(False)
+            self._schedule_save()
 
     def _add_cookie_acquire_row(
         self, provider_name: str, credential_label: str = "Cookie", automatic: bool = False
@@ -1051,6 +1289,7 @@ class SettingsWindow(QDialog):
             default_button.clicked.connect(
                 lambda _checked=False, target=editor: target.clear()
             )
+            default_button.clicked.connect(self._schedule_save)
         input_row.addWidget(editor, 1)
         if directory and isinstance(editor, QLineEdit):
             input_row.addWidget(browse_button)
@@ -1068,6 +1307,7 @@ class SettingsWindow(QDialog):
         )
         if selected:
             editor.setText(selected)
+            self._schedule_save()
 
     def _load_values(self) -> None:
         values = config_manager.load_config()
@@ -1244,26 +1484,36 @@ class SettingsWindow(QDialog):
         self._selected_data_dir = selected
         self.data_dir_edit.setText(str(self._selected_data_dir))
         self._set_feedback(
-            self.data_dir_status, "保存后将在下次启动时迁移全部应用数据。", "muted"
+            self.data_dir_status, "将在下次启动时迁移全部应用数据。", "muted"
         )
+        self._schedule_save()
 
     def _restore_default_data_dir(self) -> None:
         self._selected_data_dir = config_manager.DEFAULT_CONFIG_DIR.resolve(strict=False)
         self.data_dir_edit.setText(str(self._selected_data_dir))
         self._set_feedback(
-            self.data_dir_status, "保存后将在下次启动时恢复默认目录。", "muted"
+            self.data_dir_status, "将在下次启动时恢复默认目录。", "muted"
         )
+        self._schedule_save()
 
     def _save(self) -> None:
+        self._save_timer.stop()
+        self._save_pending = False
         values = self._values()
         for key, value in values.items():
-            if key.endswith("_BASE") and value and not config_manager.is_official_base_url(value):
+            if (
+                key.endswith("_BASE") and value
+                and not config_manager.is_official_base_url(value)
+                and value != config_manager.get(key, "")
+            ):
+                # 自动保存仅对新地址询问信任，避免修改无关开关时重复弹窗。
                 result = QMessageBox.question(
                     self,
                     "非官方 API 地址",
                     f"{key} 会接收当前平台凭据，确认信任并继续吗？",
                 )
                 if result != QMessageBox.StandardButton.Yes:
+                    self._set_feedback(self.save_feedback, "未保存：请确认或恢复 API 地址。", "danger")
                     return
         try:
             selected_data_dir = config_manager.validate_data_dir_target(
@@ -1308,10 +1558,9 @@ class SettingsWindow(QDialog):
                     "danger",
                 )
                 return
-        active_id = str(values.get("ACTIVE_PROVIDER", ""))
         self._set_feedback(
             self.save_feedback,
-            f"已使用 {active_id or '默认'} 作为数据来源，配置已保存。",
+            "已自动保存",
             "success",
         )
         if self.update_controller is not None:

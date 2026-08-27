@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 import config_manager
+from config.defaults import DEFAULT_CONFIG
 from api.providers.base import QuotaMetric, QuotaWindow
 from app_update import CheckResult, ReleaseAsset, ReleaseInfo, SemVer
 from data.store import PerProviderData, TokenData
@@ -63,6 +64,33 @@ from ui.qt_widget import FloatingWidget
 
 APP = QApplication.instance() or QApplication([])
 configure_theme(APP, "dark")
+
+
+@pytest.fixture(autouse=True)
+def isolate_ui_settings_state():
+    # 自动保存可能在失焦或关闭时执行；UI 测试使用内存配置，不能读写真实凭据和启动项。
+    values = DEFAULT_CONFIG.copy()
+
+    def persist(changes):
+        updated = config_manager.validate_config({**values, **changes})
+        values.clear()
+        values.update(updated)
+        return values.copy()
+
+    with (
+        patch.object(config_manager, "_config", values),
+        patch.object(config_manager, "load_config", side_effect=lambda: values.copy()),
+        patch.object(config_manager, "save_config", side_effect=persist),
+        patch("ui.qt_settings.sync_autostart"),
+    ):
+        yield
+        # 既有测试保留部分隐藏窗口；清除其防抖任务，防止下个用例的事件循环误保存旧草稿。
+        for window in APP.allWidgets():
+            if isinstance(window, SettingsWindow):
+                window._autosave_ready = False
+                window._save_pending = False
+                window._save_timer.stop()
+                window._appearance_save_timer.stop()
 
 
 def sample_data() -> TokenData:
@@ -1700,13 +1728,13 @@ def test_nayuto_settings_uses_manual_bearer_capture_and_clean_display_name():
         assert window._cookie_acquire_button.text() == "重试获取 Bearer"
 
         window._apply_acquired_cookie("nayuto", "Bearer synthetic-captured")
+        assert window._save_timer.isActive()
+        window.flush_pending_saves()
     assert window._provider_widgets["AUTH"].text() == "Bearer synthetic-captured"
-    assert window._provider_drafts["nayuto"] == {
-        "AUTH": "Bearer synthetic-captured"
-    }
-    saved.assert_not_called()
-    refreshed.assert_not_called()
-    assert window._cookie_acquire_status.text() == "Bearer 已自动填入，请保存设置。"
+    assert window._provider_drafts["nayuto"]["AUTH"] == "Bearer synthetic-captured"
+    saved.assert_called_once()
+    refreshed.assert_called_once()
+    assert saved.call_args.args[0]["NAYUTO_AUTH"] == "Bearer synthetic-captured"
     window.close()
 
 
@@ -2226,6 +2254,167 @@ def test_window_stays_on_top_and_compact_ball_does_not_take_focus():
         widget.hide()
 
 
+@pytest.mark.parametrize("view", ["compact", "annual", "minute"])
+def test_settings_open_inside_panel_without_changing_expanded_geometry(view):
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+        try:
+            if view != "compact":
+                widget.expand_panel()
+                widget.panel._set_activity_view(view)
+            geometry = widget.geometry()
+            widget.open_settings()
+            APP.processEvents()
+            settings = widget._settings_window
+
+            # 不只检查置顶标志：设置必须是面板子控件，不能再生成独立原生窗口。
+            assert not settings.isWindow()
+            assert settings.window() is widget
+            assert settings not in APP.topLevelWidgets()
+            assert widget.panel.content_stack.currentWidget() is settings
+            assert widget.panel.header.isVisible()
+            back = widget.panel.settings_back_button
+            back_center = back.mapTo(widget.panel.header, back.rect().center())
+            assert abs(back_center.y() - widget.panel.header.rect().center().y()) <= 1
+            assert back_center.x() < widget.panel.header.width() // 2
+            assert settings.isVisible()
+            assert widget._expanded
+            assert widget.ball.isHidden()
+            assert widget.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+            if view != "compact":
+                assert widget.geometry() == geometry
+
+            for index in range(settings.tabs.count()):
+                settings.tabs.setCurrentIndex(index)
+                APP.processEvents()
+                assert isinstance(settings.tabs.widget(index), QScrollArea)
+                assert widget.rect().contains(settings.mapTo(widget, settings.rect().bottomRight()))
+        finally:
+            widget._closed = True
+            widget.hide()
+
+
+def test_settings_return_to_panel_and_keep_drafts_after_collapse():
+    values = {**config_manager.all_config(), "ACTIVE_PROVIDER": "deepseek"}
+    with (
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+    ):
+        widget = FloatingWidget()
+        try:
+            widget.open_settings()
+            settings = widget._settings_window
+            settings._provider_widgets["AUTH"].setText("draft-token")
+
+            widget.collapse_panel()
+            APP.processEvents()
+            assert not settings.isVisible()
+            widget.expand_panel()
+            APP.processEvents()
+            assert settings.isVisible()
+
+            widget.panel.settings_back_button.click()
+            assert not settings.isVisible()
+            assert widget._expanded
+            assert widget.panel.content_stack.currentIndex() == 0
+            widget.open_settings()
+            assert widget._settings_window is settings
+            assert settings.isVisible()
+            assert settings._provider_widgets["AUTH"].text() == "draft-token"
+        finally:
+            widget._closed = True
+            widget.hide()
+
+
+@pytest.mark.parametrize("auto_collapse", [True, False])
+def test_settings_deactivation_follows_panel_preference(auto_collapse):
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+        try:
+            widget.open_settings()
+            with (
+                patch("ui.qt_widget.config_manager.get", return_value=auto_collapse),
+                patch.object(widget, "isActiveWindow", return_value=False),
+                patch("ui.qt_widget.QApplication.activeModalWidget", return_value=None),
+                patch("ui.qt_widget.QApplication.activePopupWidget", return_value=None),
+            ):
+                widget._collapse_after_deactivation()
+
+            assert widget._expanded is (not auto_collapse)
+            assert widget._settings_window.isVisible() is (not auto_collapse)
+        finally:
+            widget._closed = True
+            widget.hide()
+
+
+@pytest.mark.skipif(APP.platformName() != "windows", reason="Requires native Windows focus handling")
+@pytest.mark.parametrize("modal", [False, True])
+def test_settings_activation_ignores_child_dialog_but_not_other_windows(modal):
+    values = {**config_manager.all_config(), "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": True}
+    with (
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch("ui.qt_widget.config_manager.get", side_effect=values.get),
+    ):
+        widget = FloatingWidget()
+        widget.open_settings()
+        settings = widget._settings_window
+        other = QDialog(settings) if modal else QWidget()
+        if modal:
+            other.setModal(True)
+        try:
+            APP.processEvents()
+            other.show()
+            other.activateWindow()
+            assert QTest.qWaitForWindowActive(other, 1000)
+            APP.processEvents()
+
+            assert widget._expanded is modal
+            assert settings.isVisible() is modal
+        finally:
+            other.close()
+            widget._closed = True
+            widget.hide()
+
+
+def test_closing_widget_also_hides_embedded_settings():
+    with (
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch("ui.qt_widget.config_manager.save_widget_position"),
+        patch.object(APP, "quit") as quit_app,
+    ):
+        widget = FloatingWidget()
+        try:
+            widget.open_settings()
+            settings = widget._settings_window
+            widget.close()
+
+            assert not settings.isVisible()
+            quit_app.assert_called_once()
+        finally:
+            widget._closed = True
+            widget.hide()
+
+
+@pytest.mark.skipif(APP.platformName() != "windows", reason="Requires native Windows focus handling")
+def test_settings_provider_dropdown_keeps_panel_open():
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+        try:
+            widget.open_settings()
+            combo = widget._settings_window.provider_combo
+            combo.showPopup()
+            APP.processEvents()
+            assert QApplication.activePopupWidget() is not None
+            assert widget._expanded
+            combo.hidePopup()
+            APP.processEvents()
+            assert widget._settings_window.isVisible()
+        finally:
+            widget._closed = True
+            widget.hide()
+
+
 def test_compact_ball_uses_smaller_size_and_keeps_free_drag_position():
     with (
         patch("ui.qt_widget.FloatingWidget.refresh"),
@@ -2423,7 +2612,8 @@ def test_compact_ball_restores_saved_resize_state():
     widget.hide()
 
 
-def test_deactivation_collapses_panel_but_ignores_visible_settings():
+@pytest.mark.parametrize("active_child", ["activeModalWidget", "activePopupWidget"])
+def test_deactivation_collapses_panel_but_ignores_active_dialogs(active_child):
     with patch("ui.qt_widget.TokenData.fetch", return_value=sample_data()):
         widget = FloatingWidget()
         widget.expand_panel()
@@ -2431,7 +2621,7 @@ def test_deactivation_collapses_panel_but_ignores_visible_settings():
         with patch("ui.qt_widget.config_manager.get", return_value=True):
             with (
                 patch.object(widget, "isActiveWindow", return_value=False),
-                patch.object(widget, "_has_settings_child", return_value=True),
+                patch(f"ui.qt_widget.QApplication.{active_child}", return_value=Mock()),
             ):
                 widget._collapse_after_deactivation()
             assert widget._expanded
@@ -2444,14 +2634,16 @@ def test_deactivation_collapses_panel_but_ignores_visible_settings():
 
             with (
                 patch.object(widget, "isActiveWindow", return_value=True),
-                patch.object(widget, "_has_settings_child", return_value=False),
+                patch("ui.qt_widget.QApplication.activeModalWidget", return_value=None),
+                patch("ui.qt_widget.QApplication.activePopupWidget", return_value=None),
             ):
                 widget._collapse_after_deactivation()
             assert widget._expanded
 
             with (
                 patch.object(widget, "isActiveWindow", return_value=False),
-                patch.object(widget, "_has_settings_child", return_value=False),
+                patch("ui.qt_widget.QApplication.activeModalWidget", return_value=None),
+                patch("ui.qt_widget.QApplication.activePopupWidget", return_value=None),
             ):
                 widget._collapse_after_deactivation()
         assert not widget._expanded
@@ -2493,23 +2685,17 @@ def test_deactivation_keeps_panel_expanded_when_auto_collapse_is_disabled():
         widget.hide()
 
 
-def test_escape_closes_settings_before_collapsing_panel():
-    with patch("ui.qt_widget.TokenData.fetch", return_value=sample_data()):
+def test_escape_returns_from_settings_before_collapsing_panel():
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
         widget = FloatingWidget()
-        widget.expand_panel()
-        settings = QDialog(widget)
-        widget._settings_window = settings
-        settings.show()
+        widget.open_settings()
+        settings = widget._settings_window
         APP.processEvents()
-        escape = QKeyEvent(
-            QEvent.Type.KeyPress,
-            Qt.Key.Key_Escape,
-            Qt.KeyboardModifier.NoModifier,
-        )
 
-        widget.keyPressEvent(escape)
+        QTest.keyClick(settings, Qt.Key.Key_Escape)
         assert settings.isHidden()
         assert widget._expanded
+        assert widget.panel.content_stack.currentIndex() == 0
 
         widget.keyPressEvent(
             QKeyEvent(
@@ -3784,7 +3970,7 @@ def test_settings_theme_selector_emits_all_modes_immediately_and_cancel_does_not
 
     assert window.theme_combo.currentData() == "light"
     assert requested == emitted_before_cancel
-    assert "取消设置不会回滚主题" in window.theme_combo.toolTip()
+    assert "立即应用并保存" in window.theme_combo.toolTip()
     window.close()
 
 
@@ -3824,7 +4010,7 @@ def test_settings_theme_palette_previews_saves_and_resets_current_resolved_theme
     window.close()
 
 
-def test_settings_separates_accounts_runtime_and_updates_into_tabs():
+def test_settings_groups_configuration_into_six_scrolling_pages():
     with (
         patch("ui.qt_settings.config_manager.load_config", return_value=config_manager.all_config()),
         patch("ui.qt_settings.config_manager.all_config", return_value=config_manager.all_config()),
@@ -3832,17 +4018,153 @@ def test_settings_separates_accounts_runtime_and_updates_into_tabs():
         window = SettingsWindow()
 
     assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == [
-        "账户与凭据",
-        "运行行为",
-        "软件更新",
+        "账户连接", "外观", "悬浮与启动", "采集与统计", "数据存储", "更新与关于",
     ]
     assert window.tabs.widget(0) is window.scroll_area
-    assert window.update_card.parent() is window.tabs.widget(2)
+    for index, control in (
+        (0, window.provider_combo),
+        (1, window.theme_combo),
+        (2, window.panel_auto_collapse_check),
+        (3, window.refresh_seconds),
+        (3, window.deepseek_peak_pricing_card),
+        (4, window.minute_usage_retention_days),
+        (4, window.data_dir_edit),
+        (5, window.update_card),
+    ):
+        assert isinstance(window.tabs.widget(index), QScrollArea)
+        assert window.tabs.widget(index).isAncestorOf(control)
+    assert not any(button.text() == "保存并生效" for button in window.findChildren(QPushButton))
     assert window.test_button.parent() is window.content
     assert window.ball_size_hint.text() == (
         "悬停在悬浮球上时，滚动鼠标滚轮即可调整大小。"
     )
     window.close()
+
+
+@pytest.fixture
+def autosave_settings():
+    values = DEFAULT_CONFIG.copy()
+    refreshed = Mock()
+
+    def persist(changes):
+        values.update(changes)
+        return values.copy()
+
+    with (
+        patch("ui.qt_settings.config_manager.load_config", return_value=values),
+        patch("ui.qt_settings.config_manager.all_config", return_value=values),
+        patch("ui.qt_settings.config_manager.get", side_effect=values.get),
+        patch("ui.qt_settings.config_manager.pending_data_dir", return_value=None),
+        patch("ui.qt_settings.config_manager.save_config", side_effect=persist) as saved,
+        patch("ui.qt_settings.config_manager.validate_data_dir_target", return_value=config_manager.CONFIG_DIR),
+    ):
+        window = SettingsWindow(on_saved=refreshed)
+        window.show()
+        APP.processEvents()
+        try:
+            yield window, values, saved, refreshed
+        finally:
+            window._save_pending = False
+            window._save_timer.stop()
+            window._appearance_save_timer.stop()
+            window.close()
+
+
+def test_settings_autosave_ignores_loading_and_coalesces_user_input(autosave_settings):
+    window, values, saved, refreshed = autosave_settings
+    assert not window._save_timer.isActive()
+    editor = window._provider_widgets["AUTH"]
+    editor.setFocus()
+    QTest.keyClicks(editor, "synthetic-token")
+    saved.assert_not_called()
+    assert window._save_timer.isActive()
+    QTest.qWait(750)
+
+    saved.assert_called_once()
+    refreshed.assert_called_once()
+    assert values["DEEPSEEK_AUTH"] == "synthetic-token"
+    assert window.save_feedback.text() == "已自动保存"
+
+
+def test_settings_switch_autosaves_and_return_flushes_last_edit(autosave_settings):
+    window, values, saved, refreshed = autosave_settings
+    window.tabs.setCurrentIndex(2)
+    window.edge_hide_check.click()
+    window.reject()
+
+    saved.assert_called_once()
+    refreshed.assert_called_once()
+    assert values["EDGE_HIDE_ENABLED"] is False
+    assert not window._save_timer.isActive()
+
+
+def test_settings_autosave_reports_failure_without_success_callback(autosave_settings):
+    window, values, saved, refreshed = autosave_settings
+    saved.side_effect = OSError("disk full")
+    window.edge_hide_check.click()
+    window.flush_pending_saves()
+
+    assert values["EDGE_HIDE_ENABLED"] is True
+    assert "保存失败" in window.save_feedback.text()
+    assert window.save_feedback.property("tone") == "danger"
+    refreshed.assert_not_called()
+
+
+def test_settings_autosave_waits_for_complete_untrusted_address(autosave_settings):
+    window, values, saved, refreshed = autosave_settings
+    editor = window._provider_widgets["BASE"]
+    editor.setFocus()
+    editor.selectAll()
+    with patch("ui.qt_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.No) as question:
+        QTest.keyClicks(editor, "https://untrusted.example")
+        QTest.qWait(750)
+        question.assert_not_called()
+        saved.assert_not_called()
+        window.reject()
+
+    question.assert_called_once()
+    saved.assert_not_called()
+    refreshed.assert_not_called()
+    assert values["DEEPSEEK_BASE"] == DEFAULT_CONFIG["DEEPSEEK_BASE"]
+    assert window.save_feedback.property("tone") == "danger"
+
+
+def test_settings_capsule_keeps_full_rounding_at_both_ends():
+    with patch("ui.qt_settings.config_manager.load_config", return_value=DEFAULT_CONFIG.copy()):
+        window = SettingsWindow()
+        window.show()
+        APP.processEvents()
+        bar = window.tabs.tabBar()
+        for index in (0, window.tabs.count() - 1):
+            window.tabs.setCurrentIndex(index)
+            APP.processEvents()
+            image = bar.grab().toImage()
+            # 外层左右角都露出面板底色，不能只让首个选中页签变圆而保留直角轨道。
+            assert image.pixelColor(0, 0).name() != current_theme().surface.lower()
+            assert image.pixelColor(image.width() - 1, 0).name() != current_theme().surface.lower()
+            assert bar.tabRect(index).height() == bar.HEIGHT
+        window.close()
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+@pytest.mark.parametrize("accent", ["#FFADFA", "#FFE58A", "#3154A2"])
+def test_settings_switch_keeps_white_thumb_with_custom_accent(mode, accent):
+    controller = configure_theme(APP, mode)
+    appearance = controller.appearance(mode)
+    controller.set_appearance(mode, accent, 100)
+    window = SettingsWindow()
+    window.tabs.setCurrentIndex(2)
+    window.show()
+    try:
+        for checked, x in ((True, 37), (False, 13)):
+            window.edge_hide_check.setChecked(checked)
+            APP.processEvents()
+            image = window.edge_hide_check.grab().toImage()
+            assert image.pixelColor(x, 14).name() == "#ffffff"
+    finally:
+        window.close()
+        controller.set_appearance(mode, *appearance)
+        controller.set_mode("dark")
 
 
 def test_deepseek_cookie_acquisition_only_updates_its_cookie_draft():
@@ -3938,7 +4260,7 @@ def test_settings_window_wraps_content_in_scroll_area():
     ):
         window = SettingsWindow()
 
-    scroll_area = window.findChild(QScrollArea)
+    scroll_area = window.tabs.widget(0)
     assert scroll_area is window.scroll_area
     assert scroll_area.widgetResizable() is True
     assert scroll_area.widget() is window.content

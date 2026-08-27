@@ -73,7 +73,7 @@ python main.py
 1. 앱을 시작하고 플로팅 위젯을 클릭해 패널을 엽니다.
 2. 설정에서 DeepSeek 또는 Xiaomi MiMo를 선택합니다.
 3. Bearer Token, Cookie 또는 선택적 DeepSeek API Key를 입력합니다. MiMo Cookie 가져오기 기능은 `api-platform_ph`도 자동 추출합니다.
-4. 저장 후 새로 고칩니다. 기본 새로 고침 간격은 60초입니다.
+4. 변경 사항은 자동 저장되며 헤더에 저장 상태가 표시됩니다. 기본 새로 고침 간격은 60초입니다.
 
 `examples/config.example.py`는 필드 설명용이므로 `config.py`로 복사할 필요가 없습니다. 기존 `config.py`는 첫 실행 시 가능한 경우 이전됩니다.
 
