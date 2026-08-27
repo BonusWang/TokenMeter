@@ -210,6 +210,7 @@ class FloatingWidget(QWidget):
         self._window_origin = QPoint()
         self._drag_started = False
         self._drag_source = ""
+        self._panel_resize_origin: tuple[QPoint, int, int, bool] | None = None
         self._settings_window: SettingsWindow | None = None
         self._update_controller = AppUpdateController(self)
         self._thread_pool = QThreadPool.globalInstance()
@@ -230,6 +231,10 @@ class FloatingWidget(QWidget):
         self._ball_size_save_timer.setSingleShot(True)
         self._ball_size_save_timer.setInterval(BALL_SIZE_SAVE_DELAY_MS)
         self._ball_size_save_timer.timeout.connect(self._save_ball_size)
+        self._panel_width_save_timer = QTimer(self)
+        self._panel_width_save_timer.setSingleShot(True)
+        self._panel_width_save_timer.setInterval(300)
+        self._panel_width_save_timer.timeout.connect(self._save_panel_width)
         self._pending_ball_position: QPoint | None = None
         # 吸附、隐藏和唤出共用一个位置动画，避免多个动画同时争抢窗口坐标。
         self._edge_animation = QPropertyAnimation(self, b"pos", self)
@@ -262,6 +267,12 @@ class FloatingWidget(QWidget):
         # 图表面板会加载 pyqtgraph/NumPy；悬浮球常驻时延迟创建可显著降低基线内存。
         self.panel: MainPanel | None = None
         self._layout.addWidget(self.ball, 0, Qt.AlignmentFlag.AlignTop)
+        self._panel_resize_handles = (QWidget(self), QWidget(self))
+        for handle in self._panel_resize_handles:
+            handle.setCursor(Qt.CursorShape.SizeHorCursor)
+            handle.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+            handle.installEventFilter(self)
+            handle.hide()
         self._connect_ui()
         controller = theme_controller()
         controller.changed.connect(self._on_theme_state_changed)
@@ -446,9 +457,72 @@ class FloatingWidget(QWidget):
         return self._ball_size
 
     def _expanded_size(self) -> tuple[int, int]:
-        size = config_manager.get("WIDGET_EXPANDED_SIZE", (DEF_PANEL_W, DEF_PANEL_H))
-        width = max(640, min(DEF_PANEL_W, int(size[0])))
+        if not hasattr(self, "_panel_width"):
+            saved = config_manager.load_panel_width()
+            size = config_manager.get("WIDGET_EXPANDED_SIZE", (DEF_PANEL_W, DEF_PANEL_H))
+            self._panel_width = int(size[0]) if saved is None else saved
+        width = max(640, min(DEF_PANEL_W, self._panel_width))
         return width, self._ensure_panel().height()
+
+    def _set_panel_width(self, width: int, right_edge: int | None = None) -> None:
+        if not self._expanded:
+            return
+        work = self._work_area()
+        width = min(max(640, min(DEF_PANEL_W, width)), max(1, work.width - 16))
+        panel = self._ensure_panel()
+        panel.setMinimumWidth(min(640, width))
+        self.setFixedWidth(width)
+        if right_edge is not None:
+            self.move(right_edge - width, self.y())
+        self._clamp_to_work_area()
+        if self._panel_width != width:
+            self._panel_width = width
+            # 连续拖动只在停顿后落盘，退出前再冲刷最后一次修改。
+            self._panel_width_save_timer.start()
+
+    def _save_panel_width(self) -> None:
+        config_manager.save_panel_width(self._panel_width)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if not hasattr(self, "_panel_resize_handles"):
+            return
+        for index, handle in enumerate(self._panel_resize_handles):
+            # 只覆盖边缘留白，避免截获标题栏按钮、图表和内嵌设置的操作。
+            handle.setGeometry(
+                0 if index == 0 else self.width() - 6, 8, 6,
+                max(1, self.height() - 16),
+            )
+            handle.setVisible(self._expanded)
+            handle.raise_()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched in self._panel_resize_handles and self._expanded:
+            kind = event.type()
+            if (
+                kind == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._panel_resize_origin = (
+                    event.globalPosition().toPoint(), self.x(), self.width(),
+                    watched is self._panel_resize_handles[0],
+                )
+                return True
+            if kind == QEvent.Type.MouseMove and self._panel_resize_origin is not None:
+                origin, x, width, left = self._panel_resize_origin
+                delta = event.globalPosition().toPoint().x() - origin.x()
+                self._set_panel_width(
+                    width - delta if left else width + delta,
+                    x + width if left else None,
+                )
+                return True
+            if (
+                kind == QEvent.Type.MouseButtonRelease
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._panel_resize_origin = None
+                return True
+        return super().eventFilter(watched, event)
 
     def _resize_expanded_panel(self, height: int) -> None:
         if not self._expanded:
@@ -524,6 +598,7 @@ class FloatingWidget(QWidget):
             self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, False)
             self._arrange_expanded()
             panel.show()
+            panel.setMinimumWidth(min(640, width))
             self.setFixedSize(width, height)
             self.move(x, y)
             self.show()
@@ -553,6 +628,7 @@ class FloatingWidget(QWidget):
                 work,
             )
             self._expanded = False
+            self._panel_resize_origin = None
             if self.panel is not None:
                 self.panel.hide()
             self.setFixedSize(size, size)
@@ -587,12 +663,16 @@ class FloatingWidget(QWidget):
         return super().event(event)
 
     def _collapse_after_deactivation(self) -> None:
+        # 退出会在下一轮事件循环触发失焦回调；已关闭的面板不能再收起并重新显示悬浮球。
+        if self._closed:
+            return
         # 设置页沿用面板的失焦收起规则，但操作文件/颜色对话框或下拉菜单时不能误收起。
         if (
             bool(config_manager.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))
             and self._expanded
             and not self._transitioning
             and not self._drag_started
+            and self._panel_resize_origin is None
             and QApplication.activeModalWidget() is None
             and QApplication.activePopupWidget() is None
             and not self.isActiveWindow()
@@ -1474,6 +1554,9 @@ class FloatingWidget(QWidget):
         if self._ball_size_save_timer.isActive():
             self._ball_size_save_timer.stop()
             self._save_ball_size()
+        if self._panel_width_save_timer.isActive():
+            self._panel_width_save_timer.stop()
+            self._save_panel_width()
         size = self._compact_size()
         if self._expanded:
             x, y = compact_geometry(

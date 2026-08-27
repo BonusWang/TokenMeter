@@ -2256,6 +2256,105 @@ def test_window_stays_on_top_and_compact_ball_does_not_take_focus():
         widget.hide()
 
 
+def test_panel_resizes_in_settings_without_refresh_and_restores_after_collapse(tmp_path):
+    with (
+        # 验证关闭时落盘，但不让应用退出事件关闭后续用例创建的窗口。
+        patch.object(APP, "quit"),
+        patch("ui.qt_widget.FloatingWidget.refresh") as refresh,
+        patch.object(config_manager, "WIDGET_STATE_PATH", tmp_path / "widget-state.json"),
+        patch.object(FloatingWidget, "_work_area", return_value=WorkArea(0, 0, 1920, 1080)),
+    ):
+        widget = FloatingWidget()
+        widget.open_settings()
+        settings = widget._settings_window
+        refresh.reset_mock()
+        APP.processEvents()
+        handle = widget._panel_resize_handles[1]
+        point = QPoint(3, 80)
+        QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
+        QTest.mouseMove(handle, point - QPoint(120, 0))
+        QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=point)
+        assert widget.width() == widget.panel.width() == 700
+        assert not settings._save_pending
+        assert widget._panel_width_save_timer.isActive()
+        refresh.assert_not_called()
+        settings.reject()
+        widget.panel.minute_activity_button.click()
+        assert widget.size() == QSize(700, PANEL_HEIGHT)
+        widget.collapse_panel()
+        assert widget.width() == widget._compact_size()
+        assert all(handle.isHidden() for handle in widget._panel_resize_handles)
+        widget.expand_panel()
+        assert widget.width() == 700
+        # 关闭发生在防抖保存之前时，也必须留下最后一次宽度。
+        widget.close()
+        assert config_manager.load_panel_width() == 700
+        APP.processEvents()
+        assert widget.isHidden()
+        widget.deleteLater()
+        APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        restored = FloatingWidget()
+        restored.expand_panel()
+        assert restored.width() == 700
+        restored.close()
+        restored.deleteLater()
+        APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.mark.parametrize("left", [True, False])
+def test_panel_edges_resize_and_keep_opposite_edge_anchored(left, tmp_path):
+    with (
+        patch.object(APP, "quit"),
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch.object(config_manager, "WIDGET_STATE_PATH", tmp_path / "widget-state.json"),
+        patch.object(FloatingWidget, "_work_area", return_value=WorkArea(-1920, 0, 0, 1080)),
+    ):
+        widget = FloatingWidget()
+        widget.expand_panel()
+        widget.move(-1400, 120)
+        APP.processEvents()
+        origin_x = widget.x()
+        handle = widget._panel_resize_handles[0 if left else 1]
+        assert handle.isVisible()
+        point = QPoint(3, 80)
+        assert widget.childAt(handle.mapTo(widget, point)) is handle
+        QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
+        QTest.mouseMove(handle, point + QPoint(120 if left else -120, 0))
+        QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=point)
+        assert widget.width() == 700
+        assert widget.x() == origin_x + (120 if left else 0)
+        assert widget._panel_resize_origin is None
+        widget._set_panel_width(1)
+        assert widget.width() == 640
+        widget._set_panel_width(5000)
+        assert widget.width() == 820
+        widget.close()
+        widget.deleteLater()
+        APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_panel_width_is_clamped_to_work_area_without_losing_saved_preference(tmp_path):
+    with (
+        patch.object(APP, "quit"),
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+        patch.object(config_manager, "WIDGET_STATE_PATH", tmp_path / "widget-state.json"),
+        patch.object(FloatingWidget, "_work_area", return_value=WorkArea(0, 0, 760, 900)),
+    ):
+        config_manager.save_panel_width(810)
+        widget = FloatingWidget()
+        widget.expand_panel()
+        assert widget.width() == 744
+        assert not widget._panel_width_save_timer.isActive()
+        assert config_manager.load_panel_width() == 810
+        widget._set_panel_width(820)
+        assert widget.width() == 744
+        assert widget.x() >= 8
+        assert widget.x() + widget.width() <= 752
+        widget.close()
+        widget.deleteLater()
+        APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.mark.parametrize("view", ["compact", "annual", "minute"])
 def test_settings_open_inside_panel_without_changing_expanded_geometry(view):
     with patch("ui.qt_widget.FloatingWidget.refresh"):

@@ -491,11 +491,20 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=temp_root) as directory:
             state_path = Path(directory) / "widget-state.json"
             with patch.object(config_manager, "WIDGET_STATE_PATH", state_path):
+                self.assertIsNone(config_manager.load_panel_width())
+                config_manager.save_panel_width(700)
                 config_manager.save_widget_size(104)
                 config_manager.save_widget_position(320, 180)
 
                 self.assertEqual(config_manager.load_widget_size(), 104)
                 self.assertEqual(config_manager.load_widget_position(), (320, 180))
+                self.assertEqual(config_manager.load_panel_width(), 700)
+                config_manager.save_panel_width(720)
+                self.assertEqual(config_manager.load_widget_size(), 104)
+                self.assertEqual(config_manager.load_widget_position(), (320, 180))
+                for payload in ('{}', '[]', '{"panel_width": null}', '{"panel_width": "bad"}'):
+                    state_path.write_text(payload, encoding="utf-8")
+                    self.assertIsNone(config_manager.load_panel_width())
 
     def test_panel_auto_collapse_setting_round_trips(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"

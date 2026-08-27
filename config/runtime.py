@@ -368,6 +368,21 @@ def load_panel_layout_state() -> dict[str, Any]:
     return state_store.load_dict(PANEL_LAYOUT_PATH)
 
 
+def load_panel_width() -> int | None:
+    try:
+        return int(state_store.load_dict(WIDGET_STATE_PATH)["panel_width"])
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def save_panel_width(width: int) -> None:
+    try:
+        # 拖动宽度只更新窗口状态，不能覆盖悬浮球的位置、尺寸或写入凭据。
+        state_store.merge_dict(WIDGET_STATE_PATH, {"panel_width": int(width)})
+    except OSError:
+        logger().warning("Panel width could not be saved")
+
+
 def save_panel_layout_state(values: dict[str, Any]) -> None:
     try:
         # 面板排序变化频率高于普通设置，单独落盘可避免触发配置备份与凭据回滚流程。
