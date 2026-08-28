@@ -7,6 +7,22 @@ from ui.translation_errors import ERROR_MESSAGES
 
 MESSAGES = {
     **ERROR_MESSAGES,
+    "深浅模式使用相同主题色": (
+        "Use the same accent in light and dark modes", "深淺模式使用相同主題色",
+        "ライト・ダークモードで同じテーマカラーを使う", "라이트·다크 모드에서 같은 테마 색 사용",
+    ),
+    "默认同步主色；取消勾选后可分别设置，面板透明度始终独立。": (
+        "Sync accents by default. Uncheck to set them separately. Panel opacity stays independent.",
+        "預設同步主色；取消勾選後可分別設定，面板透明度始終獨立。",
+        "既定でテーマカラーを同期します。オフにすると個別設定できます。パネルの不透明度は常に個別です。",
+        "기본적으로 테마 색을 동기화합니다. 해제하면 개별 설정할 수 있습니다. 패널 불투명도는 항상 별도입니다.",
+    ),
+    "重置当前主题；开启主色同步时同时同步另一模式的主色。": (
+        "Reset this theme. When accent sync is on, also sync the other mode's accent.",
+        "重設目前主題；開啟主色同步時同時同步另一模式的主色。",
+        "現在のテーマをリセットします。カラー同期がオンの場合、他のモードのカラーも同期します。",
+        "현재 테마를 초기화합니다. 색 동기화가 켜져 있으면 다른 모드의 색도 동기화합니다.",
+    ),
     "跟随系统": ("System default", "跟隨系統", "システム設定", "시스템 설정"),
     "语言已切换。": (
         "Language updated.",

@@ -71,6 +71,7 @@ class App:
             dark_accent=config_manager.get("UI_DARK_ACCENT_COLOR", "#3478F6"),
             light_panel_opacity=config_manager.get("UI_LIGHT_PANEL_OPACITY", 100),
             dark_panel_opacity=config_manager.get("UI_DARK_PANEL_OPACITY", 100),
+            sync_accent=config_manager.get("UI_SYNC_ACCENT_COLOR", True),
         )
         self.qt_app.setWindowIcon(app_icon(64))
         self.widget = FloatingWidget(tray_icon=None)

@@ -419,7 +419,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_theme_appearance_defaults_and_ranges_are_validated(self):
         values = config_manager.validate_config({})
-        self.assertEqual(values["UI_LIGHT_ACCENT_COLOR"], "#2F72E8")
+        self.assertTrue(values["UI_SYNC_ACCENT_COLOR"])
+        self.assertEqual(values["UI_LIGHT_ACCENT_COLOR"], "#3478F6")
         self.assertEqual(values["UI_DARK_ACCENT_COLOR"], "#3478F6")
         self.assertEqual(values["UI_LIGHT_PANEL_OPACITY"], 100)
         self.assertEqual(values["UI_DARK_PANEL_OPACITY"], 100)
@@ -436,6 +437,31 @@ class ConfigTests(unittest.TestCase):
             config_manager.validate_config({"UI_LIGHT_ACCENT_COLOR": "blue"})
         with self.assertRaises(ValueError):
             config_manager.validate_config({"UI_DARK_PANEL_OPACITY": 69})
+
+    def test_legacy_accent_colors_sync_independently_of_theme_mode(self):
+        for mode in ("light", "dark", "system"):
+            with self.subTest(mode=mode):
+                original = {
+                    "UI_THEME": mode,
+                    "UI_LIGHT_ACCENT_COLOR": "#E88298",
+                    "UI_DARK_ACCENT_COLOR": "#FF55FF",
+                    "UI_LIGHT_PANEL_OPACITY": 80,
+                    "UI_DARK_PANEL_OPACITY": 95,
+                }
+                synced = config_manager.validate_config(original)
+                self.assertEqual(synced["UI_LIGHT_ACCENT_COLOR"], "#E88298")
+                self.assertEqual(synced["UI_DARK_ACCENT_COLOR"], "#E88298")
+                self.assertEqual(synced["UI_LIGHT_PANEL_OPACITY"], 80)
+                self.assertEqual(synced["UI_DARK_PANEL_OPACITY"], 95)
+                separate = config_manager.validate_config({
+                    **original, "UI_SYNC_ACCENT_COLOR": False,
+                })
+                self.assertEqual(separate["UI_LIGHT_ACCENT_COLOR"], "#E88298")
+                self.assertEqual(separate["UI_DARK_ACCENT_COLOR"], "#FF55FF")
+        dark_custom = config_manager.validate_config({"UI_DARK_ACCENT_COLOR": "#FF55FF"})
+        self.assertEqual(dark_custom["UI_LIGHT_ACCENT_COLOR"], "#FF55FF")
+        with self.assertRaises(ValueError):
+            config_manager.validate_config({"UI_SYNC_ACCENT_COLOR": "invalid"})
 
     def test_legacy_default_compact_size_is_migrated(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"
@@ -638,11 +664,13 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=temp_root) as directory:
             config_path = Path(directory) / "config.json"
             disk_values = config_manager._public_values(config_manager.DEFAULT_CONFIG)
+            disk_values["UI_SYNC_ACCENT_COLOR"] = False
             disk_values["REFRESH_INTERVAL"] = 75_000
             config_path.write_text(json.dumps(disk_values), encoding="utf-8")
             old_config = config_manager._config
             try:
                 draft = config_manager.DEFAULT_CONFIG.copy()
+                draft["UI_SYNC_ACCENT_COLOR"] = False
                 draft["DEEPSEEK_API_KEY"] = "connection-test-draft"
                 with (
                     patch.object(config_manager, "CONFIG_PATH", config_path),
@@ -664,6 +692,41 @@ class ConfigTests(unittest.TestCase):
                 self.assertNotIn("DEEPSEEK_API_KEY", saved)
             finally:
                 config_manager._config = old_config
+
+    def test_accent_sync_and_separate_colors_survive_reload(self):
+        temp_root = Path.cwd() / ".test-appdata" / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            config_path = Path(directory) / "config.json"
+            original = {
+                **config_manager.DEFAULT_CONFIG,
+                "UI_LIGHT_ACCENT_COLOR": "#E88298",
+                "UI_DARK_ACCENT_COLOR": "#FF55FF",
+                "UI_LIGHT_PANEL_OPACITY": 80,
+                "UI_DARK_PANEL_OPACITY": 95,
+            }
+            config_path.write_text(json.dumps(original), encoding="utf-8")
+            with (
+                patch.object(config_manager, "CONFIG_PATH", config_path),
+                patch.object(config_manager, "_config", config_manager.validate_config(original)),
+                patch.object(config_manager, "_read_credential", return_value=""),
+            ):
+                config_manager.save_ui_appearance("dark", "#E88298", 95, sync_accent=False)
+                reloaded = config_manager.load_config()
+                self.assertFalse(reloaded["UI_SYNC_ACCENT_COLOR"])
+                self.assertEqual(reloaded["UI_LIGHT_ACCENT_COLOR"], "#E88298")
+                self.assertEqual(reloaded["UI_DARK_ACCENT_COLOR"], "#E88298")
+                config_manager.save_ui_appearance("dark", "#FF55FF", 90)
+                reloaded = config_manager.load_config()
+                self.assertEqual(reloaded["UI_LIGHT_ACCENT_COLOR"], "#E88298")
+                self.assertEqual(reloaded["UI_DARK_ACCENT_COLOR"], "#FF55FF")
+                config_manager.save_ui_appearance("dark", "#FF55FF", 90, sync_accent=True)
+                reloaded = config_manager.load_config()
+                self.assertTrue(reloaded["UI_SYNC_ACCENT_COLOR"])
+                self.assertEqual(reloaded["UI_LIGHT_ACCENT_COLOR"], "#FF55FF")
+                self.assertEqual(reloaded["UI_DARK_ACCENT_COLOR"], "#FF55FF")
+                self.assertEqual(reloaded["UI_LIGHT_PANEL_OPACITY"], 80)
+                self.assertEqual(reloaded["UI_DARK_PANEL_OPACITY"], 90)
 
     def test_custom_colors_round_trip_without_saving_other_drafts(self):
         temp_root = Path.cwd() / ".test-appdata" / "tmp"

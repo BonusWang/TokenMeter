@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMenu
@@ -92,6 +93,36 @@ def test_custom_appearance_reapplies_same_mode_and_keeps_light_dark_independent(
     controller.set_mode("light")
     assert controller.tokens.accent == "#198754"
     assert controller.tokens.panel_opacity == 92
+
+
+@pytest.mark.parametrize("mode", ["light", "dark", "system"])
+def test_synced_accent_survives_mode_changes_and_keeps_opacity_independent(mode):
+    app = _FakeApplication(Qt.ColorScheme.Dark)
+    controller = ThemeController(
+        app, mode, light_accent="#E88298", dark_accent="#E88298",
+        light_panel_opacity=80, dark_panel_opacity=95, sync_accent=True,
+    )
+    controller.set_appearance("light", "#3154A2", 82)
+    for selected in ("light", "dark", "system"):
+        controller.set_mode(selected)
+        assert controller.tokens.accent == "#3154A2"
+        assert controller.tokens.heat[-1] == "#3154A2"
+    controller._system_scheme_changed(Qt.ColorScheme.Light)
+    assert controller.tokens.accent == "#3154A2"
+    assert controller.tokens.panel_opacity == 82
+    controller._system_scheme_changed(Qt.ColorScheme.Dark)
+    assert controller.tokens.accent == "#3154A2"
+    assert controller.tokens.panel_opacity == 95
+
+    controller.set_accent_sync(False)
+    controller.set_appearance("light", "#E88298", 82)
+    assert controller.tokens.accent == "#3154A2"
+    controller.set_mode("light")
+    assert controller.tokens.accent == "#E88298"
+    controller.set_accent_sync(True)
+    controller.set_mode("dark")
+    assert controller.tokens.accent == "#E88298"
+    assert controller.tokens.panel_opacity == 95
 
 
 def test_minute_tooltip_cost_uses_each_theme_accent():

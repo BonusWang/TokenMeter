@@ -563,9 +563,9 @@ def save_ui_theme(mode: str) -> str:
 
 
 def save_ui_appearance(
-    theme_name: str, accent_color: str, panel_opacity: int
+    theme_name: str, accent_color: str, panel_opacity: int, *, sync_accent: bool | None = None
 ) -> dict[str, Any]:
-    """Atomically persist the accent and panel opacity for one resolved theme."""
+    """Persist accent colors while keeping each theme's panel opacity independent."""
     normalized_theme = str(theme_name).strip().lower()
     if normalized_theme not in {"light", "dark"}:
         raise ValueError("Resolved theme must be light or dark")
@@ -573,9 +573,18 @@ def save_ui_appearance(
     opacity_key = f"UI_{normalized_theme.upper()}_PANEL_OPACITY"
     normalized_color = validate_value(color_key, accent_color)
     normalized_opacity = validate_value(opacity_key, panel_opacity)
-    return _save_ui_appearance_values(
-        {color_key: normalized_color, opacity_key: normalized_opacity}
+    values = {color_key: normalized_color, opacity_key: normalized_opacity}
+    synced = validate_value(
+        "UI_SYNC_ACCENT_COLOR",
+        get("UI_SYNC_ACCENT_COLOR", True) if sync_accent is None else sync_accent,
     )
+    if sync_accent is not None:
+        values["UI_SYNC_ACCENT_COLOR"] = synced
+    if synced or (sync_accent is not None and get("UI_SYNC_ACCENT_COLOR", True)):
+        # 解除同步时也保存当前共同颜色，避免旧版磁盘中的另一主色在重启后重新出现。
+        values["UI_LIGHT_ACCENT_COLOR"] = normalized_color
+        values["UI_DARK_ACCENT_COLOR"] = normalized_color
+    return _save_ui_appearance_values(values)
 
 
 def save_ui_custom_colors(colors: list[str]) -> list[str]:

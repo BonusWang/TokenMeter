@@ -379,6 +379,28 @@ def test_custom_accent_updates_trend_and_minute_bar_and_line_series():
         trend.close()
 
 
+def test_synced_accent_keeps_chart_and_heatmap_colors_when_switching_modes():
+    accent = "#E88298"
+    controller = configure_theme(
+        APP, "light", light_accent=accent, dark_accent=accent, sync_accent=True,
+    )
+    panel = MainPanel()
+    panel.update_data(sample_data())
+    panel.show()
+    try:
+        for mode in ("light", "dark", "light"):
+            controller.set_mode(mode)
+            APP.processEvents()
+            assert panel.trend._series.opts["brush"].color() == QColor(accent)
+            rendered = panel.activity.grab().toImage()
+            rect, _day = max(panel.activity._hits, key=lambda hit: hit[1].token_count)
+            assert rendered.pixelColor(rect.center().toPoint()) == QColor(accent)
+    finally:
+        panel.close()
+        panel.deleteLater()
+        configure_theme(APP, "dark")
+
+
 def test_chart_canvases_inherit_translucent_panel_background():
     controller = configure_theme(APP, "light")
     controller.set_appearance("light", "#E986A1", 70)
@@ -3793,6 +3815,64 @@ def test_settings_theme_selector_emits_all_modes_immediately_and_cancel_does_not
     assert requested == emitted_before_cancel
     assert "立即应用并保存" in window.theme_combo.toolTip()
     window.close()
+
+
+def test_settings_accent_sync_updates_both_modes_and_saves_policy(tmp_path):
+    values = config_manager.validate_config({
+        **DEFAULT_CONFIG,
+        "UI_LIGHT_ACCENT_COLOR": "#E88298",
+        "UI_DARK_ACCENT_COLOR": "#FF55FF",
+        "UI_LIGHT_PANEL_OPACITY": 80,
+        "UI_DARK_PANEL_OPACITY": 95,
+    })
+    controller = configure_theme(
+        APP, "dark", light_accent=values["UI_LIGHT_ACCENT_COLOR"],
+        dark_accent=values["UI_DARK_ACCENT_COLOR"],
+        light_panel_opacity=80, dark_panel_opacity=95, sync_accent=True,
+    )
+    config_path = tmp_path / "config.json"
+    with (
+        patch.object(config_manager, "_config", values),
+        patch.object(config_manager, "CONFIG_PATH", config_path),
+        patch.object(config_manager, "load_config", side_effect=config_manager.all_config),
+        patch("ui.qt_widget.FloatingWidget.refresh"),
+    ):
+        widget = FloatingWidget()
+        widget.open_settings()
+        window = widget._settings_window
+        try:
+            assert window.sync_accent_check.isChecked()
+            assert window.accent_color_edit.text() == "#E88298"
+            window.accent_color_edit.setText("#3154A2")
+            assert controller.appearance("light") == ("#3154A2", 80)
+            assert controller.appearance("dark") == ("#3154A2", 95)
+            window._commit_appearance()
+            window.theme_combo.setCurrentIndex(window.theme_combo.findData("light"))
+            assert window.accent_color_edit.text() == "#3154A2"
+            window.sync_accent_check.click()
+            window.accent_color_edit.setText("#E88298")
+            window._commit_appearance()
+            assert controller.appearance("dark") == ("#3154A2", 95)
+            assert not json.loads(config_path.read_text())["UI_SYNC_ACCENT_COLOR"]
+            window.sync_accent_check.click()
+            assert controller.appearance("dark") == ("#E88298", 95)
+            saved = json.loads(config_path.read_text())
+            assert saved["UI_SYNC_ACCENT_COLOR"]
+            assert saved["UI_LIGHT_ACCENT_COLOR"] == saved["UI_DARK_ACCENT_COLOR"] == "#E88298"
+            with patch.object(config_manager, "save_ui_appearance", side_effect=OSError("disk full")):
+                window.sync_accent_check.click()
+            assert window.sync_accent_check.isChecked()
+            assert controller.sync_accent
+            assert window.save_feedback.property("tone") == "danger"
+            window.reset_appearance_button.click()
+            assert controller.appearance("light") == (LIGHT_THEME.accent, 100)
+            assert controller.appearance("dark") == (LIGHT_THEME.accent, 95)
+        finally:
+            window._appearance_save_timer.stop()
+            widget._closed = True
+            widget.hide()
+            widget.deleteLater()
+            configure_theme(APP, "dark")
 
 
 def test_settings_theme_palette_previews_saves_and_resets_current_resolved_theme():

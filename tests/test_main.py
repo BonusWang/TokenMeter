@@ -4,6 +4,22 @@ import main
 from core.autostart import AutostartError
 
 
+def test_app_passes_accent_sync_preference_to_theme_controller():
+    for enabled in (True, False):
+        values = main.config_manager.validate_config({"UI_SYNC_ACCENT_COLOR": enabled})
+        with (
+            patch.object(main.config_manager, "get", side_effect=values.get),
+            patch("ui.qt_theme.configure_theme") as configure,
+            patch("ui.qt_widget.FloatingWidget"),
+            patch("ui.qt_tray.SystemTray"),
+        ):
+            main.App()
+        assert configure.call_args.kwargs["sync_accent"] is enabled
+        assert configure.call_args.kwargs["light_accent"] == values["UI_LIGHT_ACCENT_COLOR"]
+        assert configure.call_args.kwargs["dark_accent"] == values["UI_DARK_ACCENT_COLOR"]
+
+
+
 def test_second_instance_exits_before_runtime_initialization():
     with (
         patch.object(main, "_acquire_single_instance", return_value=None),

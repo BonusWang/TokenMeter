@@ -422,6 +422,14 @@ class SettingsWindow(QDialog):
         accent_layout.addWidget(self.accent_color_button)
         appearance_form.addRow(bind_text(QLabel(), "主题主色"), accent_row)
 
+        self.sync_accent_check = bind_text(QCheckBox(), "深浅模式使用相同主题色")
+        bind_text(
+            self.sync_accent_check,
+            "默认同步主色；取消勾选后可分别设置，面板透明度始终独立。",
+            method="setToolTip",
+        )
+        appearance_form.addRow("", self.sync_accent_check)
+
         opacity_row = QWidget()
         opacity_layout = QHBoxLayout(opacity_row)
         opacity_layout.setContentsMargins(0, 0, 0, 0)
@@ -447,7 +455,11 @@ class SettingsWindow(QDialog):
         appearance_form.addRow(bind_text(QLabel(), "悬浮球大小"), self.ball_size_hint)
 
         self.reset_appearance_button = bind_text(QPushButton(), "恢复当前主题默认配置")
-        bind_text(self.reset_appearance_button, "只重置当前解析出的浅色或深色主题", method='setToolTip')
+        bind_text(
+            self.reset_appearance_button,
+            "重置当前主题；开启主色同步时同时同步另一模式的主色。",
+            method='setToolTip',
+        )
         appearance_form.addRow(bind_text(QLabel(), ""), self.reset_appearance_button)
         appearance_layout.addWidget(appearance_card)
         appearance_layout.addStretch(1)
@@ -602,6 +614,7 @@ class SettingsWindow(QDialog):
         self.tabs.currentChanged.connect(lambda _index: self._sync_window_size())
         self._load_values()
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+        self.sync_accent_check.toggled.connect(self._on_accent_sync_changed)
         self.accent_color_edit.textChanged.connect(self._on_appearance_edited)
         self.accent_color_edit.editingFinished.connect(self._finish_accent_edit)
         self.accent_color_button.clicked.connect(self._choose_accent_color)
@@ -657,7 +670,8 @@ class SettingsWindow(QDialog):
     def _connect_autosave(self) -> None:
         # 只监听用户操作，加载配置、切换草稿和后台同步凭据不能再次触发写盘。
         for control in self.findChildren(QCheckBox):
-            control.clicked.connect(self._schedule_save)
+            if control is not self.sync_accent_check:
+                control.clicked.connect(self._schedule_save)
         for control in self.findChildren(QComboBox):
             if control not in (self.theme_combo, self.language_combo):
                 control.activated.connect(self._schedule_save)
@@ -816,6 +830,26 @@ class SettingsWindow(QDialog):
     def _on_theme_state_changed(self, mode: str, resolved: str) -> None:
         self.set_theme_mode(mode, resolved)
 
+    def _on_accent_sync_changed(self, enabled: bool) -> None:
+        if self._appearance_save_timer.isActive():
+            # 切联动策略前提交当前颜色，避免防抖中的编辑按新策略保存到错误的模式。
+            self._commit_appearance()
+        controller = theme_controller()
+        color, opacity = controller.appearance(self._resolved_theme)
+        try:
+            config_manager.save_ui_appearance(
+                self._resolved_theme, color, opacity, sync_accent=enabled
+            )
+        except Exception:
+            config_manager.logger().exception("Accent sync preference could not be saved")
+            blocker = QSignalBlocker(self.sync_accent_check)
+            self.sync_accent_check.setChecked(controller.sync_accent)
+            del blocker
+            self.set_theme_feedback("主题外观保存失败，已恢复原设置。", "danger")
+            return
+        controller.set_accent_sync(enabled)
+        self.set_theme_feedback("主题外观已保存。", "success")
+
     def set_theme_mode(self, mode: str, resolved: str | None = None) -> None:
         """Synchronize the selector without requesting the same change again."""
 
@@ -826,6 +860,9 @@ class SettingsWindow(QDialog):
             index = self.theme_combo.findData("dark")
         blocker = QSignalBlocker(self.theme_combo)
         self.theme_combo.setCurrentIndex(index)
+        del blocker
+        blocker = QSignalBlocker(self.sync_accent_check)
+        self.sync_accent_check.setChecked(theme_controller().sync_accent)
         del blocker
         self._set_appearance_controls(self._resolved_theme)
 
@@ -1377,6 +1414,7 @@ class SettingsWindow(QDialog):
             str(values.get(color_key, base.accent)),
             int(values.get(opacity_key, 100)),
         )
+        self.sync_accent_check.setChecked(bool(values.get("UI_SYNC_ACCENT_COLOR", True)))
         self.edge_hide_check.setChecked(bool(values.get("EDGE_HIDE_ENABLED", True)))
         self.panel_auto_collapse_check.setChecked(
             bool(values.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))

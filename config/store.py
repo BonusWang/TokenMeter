@@ -87,6 +87,17 @@ def validate_config(values: dict[str, Any]) -> dict[str, Any]:
     merged.update(values)
     for key in list(merged):
         merged[key] = validate_value(key, merged[key])
+    if merged["UI_SYNC_ACCENT_COLOR"]:
+        # 旧配置默认统一主色；优先保留自定义浅色，否则沿用深色主色。
+        # 固定选择规则不依赖当前模式，避免切换主题后重启又换回另一种颜色。
+        light = merged["UI_LIGHT_ACCENT_COLOR"]
+        accent = (
+            merged["UI_DARK_ACCENT_COLOR"]
+            if light.upper() == DEFAULT_CONFIG["UI_LIGHT_ACCENT_COLOR"].upper()
+            else light
+        )
+        merged["UI_LIGHT_ACCENT_COLOR"] = accent
+        merged["UI_DARK_ACCENT_COLOR"] = accent
     active_provider = str(merged.get("ACTIVE_PROVIDER", "deepseek")).strip().lower()
     if active_provider not in {"deepseek", "mimo", "codex", "cursor", "nayuto"}:
         raise ValueError("ACTIVE_PROVIDER 必须是 deepseek、mimo、codex、cursor 或 nayuto")

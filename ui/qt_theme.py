@@ -749,6 +749,7 @@ class ThemeController(QObject):
         dark_accent: str = DARK_THEME.accent,
         light_panel_opacity: int = 100,
         dark_panel_opacity: int = 100,
+        sync_accent: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -758,8 +759,9 @@ class ThemeController(QObject):
         self._resolved: Literal["light", "dark"] = "dark"
         self._appearances = {
             "light": (str(light_accent), int(light_panel_opacity)),
-            "dark": (str(dark_accent), int(dark_panel_opacity)),
+            "dark": (str(light_accent if sync_accent else dark_accent), int(dark_panel_opacity)),
         }
+        self._sync_accent = bool(sync_accent)
         self._tokens = DARK_THEME
         self._applied = False
         self._setting_mode = False
@@ -784,6 +786,22 @@ class ThemeController(QObject):
             raise ValueError("Resolved theme must be light or dark")
         return self._appearances[normalized]
 
+    @property
+    def sync_accent(self) -> bool:
+        return self._sync_accent
+
+    def set_accent_sync(self, enabled: bool) -> None:
+        if self._sync_accent == enabled:
+            return
+        self._sync_accent = enabled
+        if enabled:
+            # 开启同步时以当前显示的主色为准，只同步颜色，不覆盖另一模式的透明度。
+            other = "light" if self._resolved == "dark" else "dark"
+            self._appearances[other] = (
+                self._appearances[self._resolved][0], self._appearances[other][1]
+            )
+        self.changed.emit(self._mode, self._resolved)
+
     def set_appearance(
         self,
         theme_name: str,
@@ -797,12 +815,21 @@ class ThemeController(QObject):
         base = LIGHT_THEME if normalized == "light" else DARK_THEME
         tokens = derive_theme_tokens(base, accent_color, panel_opacity)
         appearance = (tokens.accent, tokens.panel_opacity)
-        if self._appearances[normalized] == appearance:
+        other = "light" if normalized == "dark" else "dark"
+        other_appearance = (
+            (tokens.accent, self._appearances[other][1])
+            if self._sync_accent else self._appearances[other]
+        )
+        if (
+            self._appearances[normalized] == appearance
+            and self._appearances[other] == other_appearance
+        ):
             return
         self._appearances[normalized] = appearance
-        if self._resolved != normalized:
+        self._appearances[other] = other_appearance
+        if self._resolved != normalized and not self._sync_accent:
             return
-        self._apply(normalized)
+        self._apply(self._resolved)
         self.changed.emit(self._mode, self._resolved)
 
     def set_mode(self, mode: ThemeMode | str) -> None:
@@ -875,6 +902,7 @@ def configure_theme(
     dark_accent: str = DARK_THEME.accent,
     light_panel_opacity: int = 100,
     dark_panel_opacity: int = 100,
+    sync_accent: bool = False,
 ) -> ThemeController:
     """Configure and apply the application-wide theme before widgets are built."""
     global _THEME_CONTROLLER
@@ -886,11 +914,17 @@ def configure_theme(
             dark_accent=dark_accent,
             light_panel_opacity=light_panel_opacity,
             dark_panel_opacity=dark_panel_opacity,
+            sync_accent=sync_accent,
         )
     else:
+        # 整组配置载入期间先关闭联动，避免先写入的一种颜色覆盖另一种。
+        _THEME_CONTROLLER.set_accent_sync(False)
         _THEME_CONTROLLER.set_appearance("light", light_accent, light_panel_opacity)
-        _THEME_CONTROLLER.set_appearance("dark", dark_accent, dark_panel_opacity)
+        _THEME_CONTROLLER.set_appearance(
+            "dark", light_accent if sync_accent else dark_accent, dark_panel_opacity
+        )
         _THEME_CONTROLLER.set_mode(mode)
+        _THEME_CONTROLLER.set_accent_sync(sync_accent)
     return _THEME_CONTROLLER
 
 
