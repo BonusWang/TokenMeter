@@ -24,6 +24,8 @@ def test_app_passes_accent_sync_preference_to_theme_controller():
         values = main.config_manager.validate_config({"UI_SYNC_ACCENT_COLOR": enabled})
         with (
             patch.object(main.config_manager, "get", side_effect=values.get),
+            # 此处只验证主题参数；真实初始化会跟随 CI 的系统语言并污染后续中文断言。
+            patch("ui.i18n.configure_language"),
             patch("ui.qt_theme.configure_theme") as configure,
             patch("ui.qt_widget.FloatingWidget"),
             patch("ui.qt_tray.SystemTray"),
