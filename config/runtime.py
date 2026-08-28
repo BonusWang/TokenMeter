@@ -33,6 +33,8 @@ from config.defaults import (
     FIELD_META,  # noqa: F401 - 根模块字段元数据兼容
     OFFICIAL_HOSTS,  # noqa: F401 - 根模块常量兼容
     SECRET_KEYS,
+    UI_PROVIDER_WHITELIST,
+    is_secret_key,
 )
 from config.migration import (
     migrate_data_dir as _migrate_data_dir,
@@ -419,12 +421,84 @@ def clear_pending_update_cleanup() -> None:
         logger().warning("Pending update cleanup manifest could not be removed")
 
 
+def _account_provider_ids() -> tuple[str, ...]:
+    return UI_PROVIDER_WHITELIST
+
+
+def _accounts_key(provider_id: str) -> str:
+    return f"{provider_id.upper()}_ACCOUNTS"
+
+
+def _account_token_key(provider_id: str, index: int) -> str:
+    return f"{provider_id.upper()}_TOKEN_{index}"
+
+
+def account_token_keys(values: dict[str, Any]) -> list[str]:
+    """按账号列表长度枚举索引化 token 键；顺序与列表下标一致。"""
+
+    keys: list[str] = []
+    for provider_id in _account_provider_ids():
+        accounts = values.get(_accounts_key(provider_id)) or []
+        keys.extend(
+            _account_token_key(provider_id, index) for index in range(len(accounts))
+        )
+    return keys
+
+
+def _migrate_single_account_credentials(values: dict[str, Any]) -> bool:
+    """旧单账号凭据一次性迁移为多账号列表。
+
+    顺序保证凭据不丢：先写新下标凭据，再落盘账号列表，最后清理旧键。
+    任何一步失败都不会让凭据失去已落盘的副本。
+    """
+
+    migrated = False
+    cleanups: list[str] = []
+    for provider_id in _account_provider_ids():
+        accounts_key = _accounts_key(provider_id)
+        if values.get(accounts_key):
+            continue
+        legacy_token_key = f"{provider_id.upper()}_TOKEN"
+        legacy_token = str(values.get(legacy_token_key, "") or "")
+        if not legacy_token:
+            continue
+        base = str(values.get(f"{provider_id.upper()}_BASE", "") or "")
+        token_key = _account_token_key(provider_id, 0)
+        _write_credential(token_key, legacy_token)
+        values[token_key] = legacy_token
+        values[accounts_key] = [{"label": "默认", "base": base}]
+        migrated = True
+        cleanups.append(legacy_token_key)
+    if not migrated:
+        return False
+    try:
+        # 账号列表必须先落盘，否则清理旧键后重启会丢失账号结构。
+        temp_path = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.migrate.tmp")
+        _write_json(temp_path, _public_values(validate_config(values)))
+        temp_path.replace(CONFIG_PATH)
+    except Exception as exc:
+        # 落盘失败时保留旧凭据键，下次启动重试迁移，凭据不丢。
+        logger().warning("Account migration could not be persisted: %s", type(exc).__name__)
+        return True
+    for legacy_token_key in cleanups:
+        try:
+            # 新凭据与账号列表均已落盘，此处清理失败只残留一条无用旧凭据，无害。
+            _write_credential(legacy_token_key, "")
+            values.pop(legacy_token_key, None)
+        except Exception:
+            logger().warning("Legacy %s credential cleanup failed", legacy_token_key)
+    return True
+
+
 def load_config() -> dict[str, Any]:
     global _config
     ensure_config_file()
     try:
         values = _load_public_config()
         for key in SECRET_KEYS:
+            values[key] = _read_credential(key)
+        _migrate_single_account_credentials(values)
+        for key in account_token_keys(values):
             values[key] = _read_credential(key)
         _config = validate_config(values)
     except Exception as exc:
@@ -456,14 +530,24 @@ def save_config(values: dict[str, Any]) -> dict[str, Any]:
     merged = _config.copy()
     merged.update(values)
     validated = validate_config(merged)
+    # 账号 token 随账号列表下标一起作为一组凭据保存与回滚；列表缩短时，
+    # 超出新长度的旧下标凭据一并清空，避免已删除账号的 key 残留凭据管理器。
+    new_token_keys = set(account_token_keys(validated))
+    stale_token_keys = [key for key in account_token_keys(_config) if key not in new_token_keys]
+    secret_keys = [*SECRET_KEYS, *new_token_keys, *stale_token_keys]
+    stale_key_set = set(stale_token_keys)
     stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
     backup_path = CONFIG_DIR / f"config.json.bak-{stamp}"
     temp_path = CONFIG_DIR / "config.json.tmp"
     _write_json(backup_path, _public_values(_config))
-    old_secrets = {key: _config.get(key, "") for key in SECRET_KEYS}
+    old_secrets = {key: _config.get(key, "") for key in secret_keys}
     try:
-        for key in SECRET_KEYS:
-            _write_credential(key, validated[key])
+        for key in secret_keys:
+            value = "" if key in stale_key_set else str(validated.get(key, "") or "")
+            _write_credential(key, value)
+        for key in stale_token_keys:
+            # 已缩短的旧下标键不再是有效配置，一并移出内存态。
+            validated.pop(key, None)
         _write_json(temp_path, _public_values(validated))
         temp_path.replace(CONFIG_PATH)
         _config = validated.copy()
@@ -545,7 +629,7 @@ def save_ui_theme(mode: str) -> str:
 
         # Read from disk instead of an in-memory settings draft, and strip any
         # accidentally persisted secrets so a theme click can never expose them.
-        for key in SECRET_KEYS:
+        for key in [key for key in public_values if is_secret_key(key)]:
             public_values.pop(key, None)
         public_values["credential_store"] = "windows-credential-manager"
         public_values["UI_THEME"] = normalized
@@ -606,7 +690,7 @@ def _save_ui_appearance_values(values: dict[str, Any]) -> dict[str, Any]:
             public_values = _public_values(DEFAULT_CONFIG)
 
         # 色板与主题外观共用只写公开字段的路径，避免把尚未保存的凭据草稿一并写盘。
-        for key in SECRET_KEYS:
+        for key in [key for key in public_values if is_secret_key(key)]:
             public_values.pop(key, None)
         public_values["credential_store"] = "windows-credential-manager"
         public_values.update(values)

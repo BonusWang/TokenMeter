@@ -23,11 +23,13 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QPalette, QRegion
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMenu, QSystemTrayIcon, QWidget
 
+from api.aggregator import AccountQuota, fetch_all_accounts, tensest_window
 from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
 from api.providers import PROVIDERS, configured_provider_ids
 from api.providers.base import FetchError
 from api.providers.mimo import MiMoProvider
 from config import runtime as config_manager
+from config.defaults import UI_PROVIDER_WHITELIST
 from core import pet_extension
 from core.identity import APP_DISPLAY_NAME
 from data.store import PerProviderData, TokenData
@@ -57,6 +59,11 @@ MAX_BALL_SIZE = 124
 BALL_SIZE_STEP = 4
 BALL_SIZE_SAVE_DELAY_MS = 300
 BACKGROUND_PROVIDER_INTERVAL_MS = 60_000
+# 多账号视图：面板展示白名单 provider 的全部账号，单一 provider 刷新管线退场。
+# 与 ui.qt_panel.PANEL_MIN_WIDTH 保持一致（此处不能提前导入面板模块拖慢启动）。
+ACCOUNTS_MODE = bool(UI_PROVIDER_WHITELIST)
+ACCOUNTS_PANEL_MIN_W = 420
+ACCOUNTS_PANEL_DEFAULT_W = 420
 
 
 class FetchSignals(QObject):
@@ -85,6 +92,30 @@ class FetchTask(QRunnable):
 
 class MiMoRenewalSignals(QObject):
     finished = Signal(str, str)
+
+
+class AccountsFetchSignals(QObject):
+    finished = Signal(int, object)
+
+
+class AccountsFetchTask(QRunnable):
+    """并发抓取全部白名单账号；每账号独立 provider 实例，互不阻塞。"""
+
+    def __init__(self, request_id: int, config: dict[str, object]):
+        super().__init__()
+        self.request_id = request_id
+        self._config = dict(config)
+        self.signals = AccountsFetchSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            accounts = fetch_all_accounts(self._config)
+        except Exception:
+            # 单账号异常已在聚合层收敛；此处兜底整体崩溃，避免线程静默死亡。
+            config_manager.logger().exception("Accounts aggregation failed")
+            accounts = []
+        self.signals.finished.emit(self.request_id, accounts)
 
 
 class MiMoRenewalTask(QRunnable):
@@ -188,6 +219,12 @@ class FloatingWidget(QWidget):
         self._data = (
             TokenData.persisted_snapshot(config_manager.all_config()) or TokenData()
         )
+        # 多账号视图状态：聚合结果与在飞请求独立于单 provider 刷新管线。
+        self._accounts: list[AccountQuota] = []
+        self._accounts_in_flight = False
+        self._accounts_pending = False
+        self._accounts_request_id = 0
+        self._accounts_last_success: datetime | None = None
         self._refresh_lock = threading.Lock()
         self._refreshing = False
         self._request_id = 0
@@ -530,18 +567,22 @@ class FloatingWidget(QWidget):
     def _expanded_size(self) -> tuple[int, int]:
         if not hasattr(self, "_panel_width"):
             saved = config_manager.load_panel_width()
-            size = config_manager.get("WIDGET_EXPANDED_SIZE", (DEF_PANEL_W, DEF_PANEL_H))
-            self._panel_width = int(size[0]) if saved is None else saved
-        width = max(640, min(DEF_PANEL_W, self._panel_width))
+            # 多账号卡片视图默认窄面板；旧版保存过的宽度仍然尊重。
+            self._panel_width = (
+                ACCOUNTS_PANEL_DEFAULT_W if saved is None else saved
+            )
+        width = max(ACCOUNTS_PANEL_MIN_W, min(DEF_PANEL_W, self._panel_width))
         return width, self._ensure_panel().height()
 
     def _set_panel_width(self, width: int, right_edge: int | None = None) -> None:
         if not self._expanded:
             return
         work = self._work_area()
-        width = min(max(640, min(DEF_PANEL_W, width)), max(1, work.width - 16))
+        width = min(
+            max(ACCOUNTS_PANEL_MIN_W, min(DEF_PANEL_W, width)), max(1, work.width - 16)
+        )
         panel = self._ensure_panel()
-        panel.setMinimumWidth(min(640, width))
+        panel.setMinimumWidth(min(ACCOUNTS_PANEL_MIN_W, width))
         self.setFixedWidth(width)
         if right_edge is not None:
             self.move(right_edge - width, self.y())
@@ -669,7 +710,7 @@ class FloatingWidget(QWidget):
             self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, False)
             self._arrange_expanded()
             panel.show()
-            panel.setMinimumWidth(min(640, width))
+            panel.setMinimumWidth(min(ACCOUNTS_PANEL_MIN_W, width))
             self.setFixedSize(width, height)
             self.move(x, y)
             self.show()
@@ -677,8 +718,16 @@ class FloatingWidget(QWidget):
             self.raise_()
             self.activateWindow()
             panel.setFocus(Qt.FocusReason.OtherFocusReason)
-            loading = self._refreshing and self._data.last_success_at is None
-            panel.update_data(self._data, loading, self._refreshing)
+            if ACCOUNTS_MODE:
+                if self._accounts:
+                    panel.set_accounts(
+                        self._accounts,
+                        refreshing=self._accounts_in_flight,
+                        last_success=self._accounts_last_success,
+                    )
+            else:
+                loading = self._refreshing and self._data.last_success_at is None
+                panel.update_data(self._data, loading, self._refreshing)
             self.refresh()
         finally:
             self._transitioning = False
@@ -1180,6 +1229,13 @@ class FloatingWidget(QWidget):
             if config_snapshot is not None
             else config_manager.all_config()
         )
+        if ACCOUNTS_MODE:
+            # 多账号视图一次刷新全部账号，不再按 ACTIVE_PROVIDER 单抓。
+            self._start_accounts_refresh(
+                captured_config,
+                queue_if_busy=queue_if_busy and not force,
+            )
+            return
         provider_id = str(captured_config.get("ACTIVE_PROVIDER", "")).strip().lower()
         self._start_provider_refresh(
             provider_id,
@@ -1271,6 +1327,89 @@ class FloatingWidget(QWidget):
             queue_if_busy=False,
             reason=reason,
         )
+
+    # ------------------------------------------------------------ 多账号刷新
+    def _start_accounts_refresh(
+        self,
+        captured_config: dict[str, object],
+        *,
+        queue_if_busy: bool,
+    ) -> None:
+        if self._closed:
+            return
+        if self._accounts_in_flight:
+            if queue_if_busy:
+                # 聚合抓取进行中只保留一个待刷新标记，本轮结束后补一次。
+                self._accounts_pending = True
+            return
+        self._accounts_in_flight = True
+        self._accounts_pending = False
+        self._accounts_request_id += 1
+        task = AccountsFetchTask(self._accounts_request_id, captured_config)
+        task.signals.finished.connect(self._finish_accounts_refresh)
+        self._thread_pool.start(task)
+        if self.panel is not None:
+            self.panel.set_refreshing(True)
+        self._apply_accounts_update()
+
+    @Slot(int, object)
+    def _finish_accounts_refresh(self, request_id: int, accounts: list[AccountQuota]) -> None:
+        if self._closed or request_id != self._accounts_request_id:
+            return
+        self._accounts_in_flight = False
+        self._accounts = accounts
+        if any(not account.error for account in accounts):
+            self._accounts_last_success = datetime.now()
+        if self.panel is not None:
+            self.panel.set_refreshing(False)
+        self._apply_accounts_update()
+        if self._accounts_pending:
+            self._accounts_pending = False
+            QTimer.singleShot(
+                0,
+                lambda: self._start_accounts_refresh(
+                    config_manager.all_config(), queue_if_busy=False
+                ),
+            )
+
+    def _apply_accounts_update(self) -> None:
+        """多账号视图：悬浮球显示最紧张窗口，tooltip 汇总各账号 5 小时已用%。"""
+
+        accounts = self._accounts
+        loading = self._accounts_in_flight and self._accounts_last_success is None
+        primary = tensest_window(accounts)
+        if primary is None:
+            if accounts or loading:
+                self.ball.set_quota_state(
+                    None,
+                    "正在更新额度" if loading else "暂无可用账号",
+                    "多账号",
+                )
+            else:
+                self.ball.clear_quota_state()
+        else:
+            tooltips = []
+            for account in accounts:
+                if account.error:
+                    continue
+                five_hour = next(
+                    (w for w in account.windows if w.id == "five_hour"), None
+                )
+                if five_hour is not None:
+                    label = account.label or account.provider_name
+                    tooltips.append(f"{label} {five_hour.used_percent:.0f}%")
+            self.ball.set_quota_state(
+                None if loading else 100 - primary.used_percent,
+                "正在更新额度" if loading else format_reset_countdown(primary.resets_at),
+                primary.title,
+                tooltip=" · ".join(tooltips) or None,
+            )
+        if self.panel is not None and self._expanded:
+            self.panel.set_accounts(
+                accounts,
+                refreshing=self._accounts_in_flight,
+                last_success=self._accounts_last_success,
+            )
 
     @Slot(int, str, object)
     def _finish_refresh(
@@ -1537,6 +1676,9 @@ class FloatingWidget(QWidget):
 
     def _periodic_background_refresh(self) -> None:
         if self._closed:
+            return
+        if ACCOUNTS_MODE:
+            # 多账号视图的定时刷新由 refresh() 统一驱动，不再按后台 provider 轮询。
             return
         captured_config = config_manager.all_config()
         active_provider = str(

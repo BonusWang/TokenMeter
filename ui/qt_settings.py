@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
 from config import runtime as config_manager
+from config.defaults import UI_PROVIDER_WHITELIST
 from core import pet_extension
 from core.autostart import AutostartError, sync_autostart
 from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
@@ -1449,6 +1450,13 @@ class SettingsWindow(QDialog):
         header = bind_text(QLabel(), f"{provider_instance.name} 凭据")
         header.setStyleSheet("font-size: 14px; font-weight: 600;")
         self.credentials_layout.addWidget(header)
+
+        if provider_id in UI_PROVIDER_WHITELIST:
+            # 多账号由导入脚本维护；此处保留单账号快捷配置入口。
+            hint = bind_text(QLabel(), "多账号请使用 scripts/import_ccswitch_plans.py 导入")
+            hint.setObjectName("muted")
+            hint.setWordWrap(True)
+            self.credentials_layout.addWidget(hint)
 
         for field, meta in (provider_instance.credential_fields or {}).items():
             label = str(meta.get("label") or field)

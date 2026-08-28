@@ -333,6 +333,7 @@ class FloatingUsageBall(QWidget):
         remaining_percent: float | None,
         reset_text: str,
         title: str = "周额度",
+        tooltip: str | None = None,
     ) -> None:
         remaining = (
             None if remaining_percent is None else max(0.0, min(100.0, float(remaining_percent)))
@@ -344,7 +345,7 @@ class FloatingUsageBall(QWidget):
             self._quota_remaining,
             self._quota_reset_text,
             self._quota_title,
-        ):
+        ) and tooltip is None:
             return
         self._quota_mode = True
         self._quota_remaining, self._quota_reset_text, self._quota_title = state
@@ -358,7 +359,8 @@ class FloatingUsageBall(QWidget):
         remaining_text = "未知" if remaining is None else f"{remaining:.0f}%"
         bind_text(self, "Codex 剩余额度", method='setAccessibleName')
         bind_text(self, remaining_text, method='setAccessibleDescription')
-        bind_text(self, remaining_text, method='setToolTip')
+        # 多账号模式下 tooltip 汇总各账号水位；默认保持单账号剩余百分比。
+        bind_text(self, remaining_text if tooltip is None else tooltip, method='setToolTip')
         if self.isVisible():
             if remaining is not None and remaining > 0:
                 self._ensure_animation()

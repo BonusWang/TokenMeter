@@ -9,11 +9,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from data.store import FetchError, PerProviderData, TokenData
 from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState
+from data.store import FetchError, PerProviderData, TokenData
 from ui.qt_panel import MainPanel
 from ui.qt_widget import (
     BACKGROUND_PROVIDER_INTERVAL_MS,
+    AccountsFetchTask,
     FetchTask,
     FloatingWidget,
     MiMoRenewalTask,
@@ -51,6 +52,12 @@ def widget_stub():
     widget._auth_expired_provider_id = None
     widget._mimo_renewal_task = None
     widget._mimo_renewal_attempted = False
+    # 多账号视图状态（accounts_mode_stub 单独补齐 in-flight 标记）。
+    widget._accounts = []
+    widget._accounts_in_flight = False
+    widget._accounts_pending = False
+    widget._accounts_request_id = 0
+    widget._accounts_last_success = None
     return widget
 
 
@@ -174,9 +181,12 @@ class RefreshTests(unittest.TestCase):
     def test_compact_mimo_uses_lightweight_refresh(self):
         widget = widget_stub()
 
-        with patch(
-            "ui.qt_widget.config_manager.all_config",
-            return_value={"ACTIVE_PROVIDER": "mimo"},
+        with (
+            patch("ui.qt_widget.ACCOUNTS_MODE", False),
+            patch(
+                "ui.qt_widget.config_manager.all_config",
+                return_value={"ACTIVE_PROVIDER": "mimo"},
+            ),
         ):
             widget.refresh()
 
@@ -192,6 +202,7 @@ class RefreshTests(unittest.TestCase):
             "MARKER": "captured",
         }
         with (
+            patch("ui.qt_widget.ACCOUNTS_MODE", False),
             patch("ui.qt_widget.config_manager.all_config", return_value=config),
             patch(
                 "ui.qt_widget.configured_provider_ids",
@@ -302,7 +313,10 @@ class RefreshTests(unittest.TestCase):
 
     def test_repeated_refresh_runs_once_then_one_pending(self):
         widget = widget_stub()
-        with patch("ui.qt_widget.config_manager.get", return_value="deepseek"):
+        with (
+            patch("ui.qt_widget.ACCOUNTS_MODE", False),
+            patch("ui.qt_widget.config_manager.get", return_value="deepseek"),
+        ):
             widget.refresh()
             widget.refresh()
             widget.refresh()
@@ -320,7 +334,10 @@ class RefreshTests(unittest.TestCase):
         )
         snapshot = {"ACTIVE_PROVIDER": "codex", "CODEX_HOME": ""}
 
-        with patch("ui.qt_widget.config_manager.get", return_value="codex"):
+        with (
+            patch("ui.qt_widget.ACCOUNTS_MODE", False),
+            patch("ui.qt_widget.config_manager.get", return_value="codex"),
+        ):
             widget._prepare_scope_switch(loading, snapshot)
 
         self.assertEqual(widget._thread_pool.start.call_count, 1)
@@ -361,6 +378,7 @@ class RefreshTests(unittest.TestCase):
         snapshot = {"ACTIVE_PROVIDER": "codex", "CODEX_HOME": ""}
 
         with (
+            patch("ui.qt_widget.ACCOUNTS_MODE", False),
             patch("ui.qt_widget.config_manager.get", side_effect=["deepseek", "codex"]),
             patch("ui.qt_widget.config_manager.save_config", return_value=snapshot),
             patch.object(TokenData, "cached_snapshot", return_value=cached),
@@ -691,6 +709,74 @@ class RefreshTests(unittest.TestCase):
     def test_status_summary_treats_successful_zero_usage_as_normal(self):
         data = TokenData(status="ok", daily_usage=[])
         self.assertIn("暂无 Token 活动", MainPanel.status_summary(data)[0])
+
+
+class AccountsRefreshTests(unittest.TestCase):
+    """多账号视图的聚合刷新：一次抓全部账号、在飞去重、pending 补刷。"""
+
+    def accounts_stub(self):
+        widget = widget_stub()
+        widget._apply_accounts_update = Mock()
+        return widget
+
+    def test_refresh_starts_single_accounts_task_with_snapshot(self):
+        widget = self.accounts_stub()
+        snapshot = {"ACTIVE_PROVIDER": "zhipu", "MARKER": "captured"}
+
+        with patch(
+            "ui.qt_widget.config_manager.all_config", return_value=dict(snapshot)
+        ):
+            widget.refresh()
+
+        widget._thread_pool.start.assert_called_once()
+        task = widget._thread_pool.start.call_args.args[0]
+        self.assertIsInstance(task, AccountsFetchTask)
+        self.assertEqual(task._config["MARKER"], "captured")
+        self.assertTrue(widget._accounts_in_flight)
+        widget._apply_accounts_update.assert_called_once()
+
+    def test_repeated_accounts_refresh_runs_once_then_one_pending(self):
+        widget = self.accounts_stub()
+
+        with patch(
+            "ui.qt_widget.config_manager.all_config",
+            return_value={"ACTIVE_PROVIDER": "zhipu"},
+        ):
+            widget.refresh()
+            widget.refresh()
+            widget.refresh()
+
+        self.assertEqual(widget._thread_pool.start.call_count, 1)
+        self.assertTrue(widget._accounts_in_flight)
+        self.assertTrue(widget._accounts_pending)
+
+    def test_finish_accounts_refresh_records_success_and_drains_pending(self):
+        widget = self.accounts_stub()
+        with patch(
+            "ui.qt_widget.config_manager.all_config",
+            return_value={"ACTIVE_PROVIDER": "zhipu"},
+        ):
+            widget.refresh()
+            widget.refresh()
+        request_id = widget._accounts_request_id
+
+        with patch("ui.qt_widget.config_manager.all_config", return_value={}):
+            widget._finish_accounts_refresh(request_id, [])
+
+        self.assertFalse(widget._accounts_in_flight)
+        self.assertIsNone(widget._accounts_last_success)
+        # pending 补刷通过事件循环重新入队，这里只验证标记被消费。
+        self.assertFalse(widget._accounts_pending)
+
+    def test_finish_accounts_refresh_ignores_stale_request(self):
+        widget = self.accounts_stub()
+        widget._accounts_request_id = 7
+        widget._accounts_in_flight = True
+
+        widget._finish_accounts_refresh(6, [])
+
+        self.assertTrue(widget._accounts_in_flight)
+        widget._apply_accounts_update.assert_not_called()
 
 
 if __name__ == "__main__":

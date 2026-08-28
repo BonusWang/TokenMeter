@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from api.deepseek_pricing import configured_periods, parse_time_text
-from config.defaults import DEFAULT_CONFIG, FIELD_META, OFFICIAL_HOSTS, SECRET_KEYS
+from config.defaults import DEFAULT_CONFIG, FIELD_META, OFFICIAL_HOSTS, is_secret_key
 
 
 def validate_value(key: str, value: Any) -> Any:
@@ -79,6 +79,21 @@ def validate_value(key: str, value: Any) -> Any:
         return normalized_providers
     if kind == "time":
         return parse_time_text(value).strftime("%H:%M")
+    if kind == "account_list":
+        # 每项只保存非密的 {label, base}；token 走凭据管理器的下标键。
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{key} 必须是账号列表")
+        accounts: list[dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValueError(f"{key} 的每一项必须是账号对象")
+            base = str(item.get("base", "")).strip()
+            if base:
+                parsed = urlparse(base)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    raise ValueError(f"{key} 的 base 必须是有效的 HTTP(S) 地址")
+            accounts.append({"label": str(item.get("label", "")).strip(), "base": base})
+        return accounts
     return str(value)
 
 
@@ -99,8 +114,8 @@ def validate_config(values: dict[str, Any]) -> dict[str, Any]:
         merged["UI_LIGHT_ACCENT_COLOR"] = accent
         merged["UI_DARK_ACCENT_COLOR"] = accent
     active_provider = str(merged.get("ACTIVE_PROVIDER", "deepseek")).strip().lower()
-    if active_provider not in {"deepseek", "mimo", "codex", "cursor", "nayuto"}:
-        raise ValueError("ACTIVE_PROVIDER 必须是 deepseek、mimo、codex、cursor 或 nayuto")
+    if active_provider not in {"deepseek", "mimo", "codex", "cursor", "nayuto", "zhipu", "minimax"}:
+        raise ValueError("ACTIVE_PROVIDER 必须是 deepseek、mimo、codex、cursor、nayuto、zhipu 或 minimax")
     merged["ACTIVE_PROVIDER"] = active_provider
     update_channel = str(merged.get("UPDATE_CHANNEL", "stable")).strip().lower()
     if update_channel not in {"stable", "prerelease"}:
@@ -125,7 +140,7 @@ def is_official_base_url(value: str) -> bool:
 
 
 def public_values(values: dict[str, Any]) -> dict[str, Any]:
-    result = {key: value for key, value in values.items() if key not in SECRET_KEYS}
+    result = {key: value for key, value in values.items() if not is_secret_key(key)}
     result["credential_store"] = "windows-credential-manager"
     return result
 

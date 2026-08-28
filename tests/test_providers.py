@@ -677,6 +677,8 @@ class CursorProviderTests(unittest.TestCase):
                 ("codex", "Codex"),
                 ("cursor", "Cursor"),
                 ("nayuto", "NayutoAI"),
+                ("zhipu", "Zhipu GLM"),
+                ("minimax", "MiniMax"),
             ],
         )
 

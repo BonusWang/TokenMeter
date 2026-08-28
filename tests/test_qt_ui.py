@@ -29,14 +29,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from api.aggregator import AccountQuota
+from api.providers.base import QuotaMetric, QuotaWindow
 from config import runtime as config_manager
 from config.defaults import DEFAULT_CONFIG
-from api.providers.base import QuotaMetric, QuotaWindow
-from updater.client import CheckResult, ReleaseAsset, ReleaseInfo, SemVer
 from data.store import PerProviderData, TokenData
 from ui.geometry import WorkArea
 from ui.qt_ball import FloatingUsageBall, LiquidSurfaceState
 from ui.qt_panel import (
+    ACCOUNTS_MIN_PANEL_HEIGHT,
     ACTIVITY_SECTION_HEIGHT,
     ANNUAL_ACTIVITY_SECTION_HEIGHT,
     ANNUAL_PANEL_HEIGHT,
@@ -64,6 +65,7 @@ from ui.qt_theme import DARK_THEME, LIGHT_THEME, configure_theme, current_theme
 from ui.qt_update import AppUpdateController, UpdatePromptDialog
 from ui.qt_widget import FloatingWidget
 from ui.vpet_host import VPetHost, usage_message
+from updater.client import CheckResult, ReleaseAsset, ReleaseInfo, SemVer
 
 APP = QApplication.instance() or QApplication([])
 configure_theme(APP, "dark")
@@ -486,9 +488,10 @@ def test_panel_quick_switches_provider_and_renders_subscription_quota():
     panel.provider_quick_combo.showPopup()
     APP.processEvents()
     popup = panel.provider_quick_combo.view().window()
-    assert popup.size() == QSize(132, 208)
-    assert popup.minimumSize() == QSize(132, 208)
-    assert popup.maximumSize() == QSize(132, 208)
+    # 7 个 provider 受 maxVisibleItems(6) 限制，弹层显示 6 行。
+    assert popup.size() == QSize(132, 242)
+    assert popup.minimumSize() == QSize(132, 242)
+    assert popup.maximumSize() == QSize(132, 242)
     assert popup.windowFlags() & Qt.WindowType.FramelessWindowHint
     assert popup.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert popup.frameShape() == QFrame.Shape.NoFrame
@@ -576,7 +579,7 @@ def test_cursor_uses_existing_quota_panel_positions_and_empty_activity_states():
     panel = MainPanel()
     panel.update_data(data)
 
-    assert panel.provider_quick_combo.count() == 5
+    assert panel.provider_quick_combo.count() == 7
     assert panel.provider_quick_combo.currentData() == "cursor"
     assert panel.provider_quick_combo.size() == QSize(132, 28)
     assert panel.today_card.title_label.text() == "每月额度"
@@ -729,16 +732,14 @@ def test_header_does_not_start_drag_from_provider_selector_events():
     panel = MainPanel()
     panel.show()
     APP.processEvents()
+    # 多账号模式下快速切换下拉整体退场，标题栏不再有需要排除的拖动盲区。
+    assert panel.provider_quick_combo.isHidden()
     pressed: list[QPoint] = []
     dragged: list[QPoint] = []
     released: list[QPoint] = []
     panel.header.pressed.connect(pressed.append)
     panel.header.dragged.connect(dragged.append)
     panel.header.released.connect(released.append)
-
-    combo_point = panel.provider_quick_combo.mapTo(
-        panel.header, panel.provider_quick_combo.rect().center()
-    )
 
     def mouse_event(event_point: QPoint, *, pressed_button: bool) -> Mock:
         event = Mock()
@@ -752,22 +753,12 @@ def test_header_does_not_start_drag_from_provider_selector_events():
         event.globalPosition.return_value = QPointF(panel.header.mapToGlobal(event_point))
         return event
 
+    combo_point = QPoint(430, panel.header.height() // 2)
     panel.header.mousePressEvent(mouse_event(combo_point, pressed_button=True))
     panel.header.mouseMoveEvent(
         mouse_event(combo_point + QPoint(12, 0), pressed_button=True)
     )
     panel.header.mouseReleaseEvent(mouse_event(combo_point, pressed_button=True))
-
-    assert pressed == []
-    assert dragged == []
-    assert released == []
-
-    free_point = QPoint(430, panel.header.height() // 2)
-    panel.header.mousePressEvent(mouse_event(free_point, pressed_button=True))
-    panel.header.mouseMoveEvent(
-        mouse_event(free_point + QPoint(12, 0), pressed_button=True)
-    )
-    panel.header.mouseReleaseEvent(mouse_event(free_point, pressed_button=True))
 
     assert len(pressed) == 1
     assert len(dragged) == 1
@@ -2024,6 +2015,12 @@ def test_statistics_show_cached_historical_total_with_scope_tooltip():
 def test_panel_uses_fixed_v3_layout_budget_and_fluent_actions():
     panel = MainPanel()
     panel.minute_activity_button.click()
+    # 多账号模式：用量区块在 update_data 之前就已整体隐藏。
+    assert panel.provider_quick_combo.isHidden()
+    assert panel.top_section.isHidden()
+    assert panel.activity_card.isHidden()
+    assert panel.statistics.isHidden()
+    assert not panel.accounts_scroll.isHidden()
     panel.resize(820, 550)
     panel.update_data(sample_data())
     panel.show()
@@ -2032,7 +2029,7 @@ def test_panel_uses_fixed_v3_layout_budget_and_fluent_actions():
     status_bar = panel.findChild(QWidget, "statusBar")
     buttons = panel.findChildren(QToolButton, "panelToolButton")
 
-    assert PANEL_MIN_WIDTH == 640
+    assert PANEL_MIN_WIDTH == 420
     assert PANEL_MAX_WIDTH == 820
     assert PANEL_HEIGHT == 550
     assert HEADER_HEIGHT == 42
@@ -2045,13 +2042,8 @@ def test_panel_uses_fixed_v3_layout_budget_and_fluent_actions():
     assert panel.minimumSize().height() == PANEL_HEIGHT
     assert panel.maximumSize().height() == PANEL_HEIGHT
     assert panel.header.height() == HEADER_HEIGHT
-    assert panel.top_section.height() == TOP_SECTION_HEIGHT
-    assert panel.activity_card.height() == ACTIVITY_SECTION_HEIGHT
-    assert panel.statistics.height() == STATISTICS_SECTION_HEIGHT
     assert status_bar.height() == STATUS_SECTION_HEIGHT
-    assert panel.top_section.y() < panel.activity_card.y() < panel.statistics.y() < status_bar.y()
     assert len(panel.activity._hits) >= 365
-    assert panel.activity.height() == 133
     assert len(panel.statistics._values) == 5
     assert all(
         label.alignment() & Qt.AlignmentFlag.AlignHCenter
@@ -2062,12 +2054,6 @@ def test_panel_uses_fixed_v3_layout_budget_and_fluent_actions():
     assert panel.minute_date_edit.size() == QSize(118, 26)
     assert panel.annual_activity_button.size() == QSize(72, 22)
     assert panel.activity_summary.minimumWidth() == 200
-    assert all(
-        0 <= value.mapTo(panel.statistics, QPoint()).y()
-        and value.mapTo(panel.statistics, QPoint()).y() + value.height()
-        <= panel.statistics.height()
-        for value in panel.statistics._values
-    )
     assert [button.toolTip() for button in buttons] == ["设置", "刷新", "收起"]
     assert all(not button.icon().isNull() for button in buttons)
     assert all(button.iconSize().width() == 18 for button in buttons)
@@ -2108,18 +2094,22 @@ def test_activity_switch_keeps_compact_controls_stable_and_fills_annual_page():
     panel.close()
 
 
-def test_panel_at_640px_keeps_full_heatmap_without_horizontal_scrolling():
+def test_panel_at_min_width_keeps_account_cards_without_horizontal_scrolling():
     panel = MainPanel()
+    accounts = [
+        AccountQuota(
+            "zhipu", "Zhipu GLM", label,
+            windows=(QuotaWindow("five_hour", "5小时", 30.0),),
+        )
+        for label in ("智谱1", "智谱2", "智谱3")
+    ]
     panel.resize(PANEL_MIN_WIDTH, PANEL_HEIGHT)
-    panel.update_data(sample_data())
+    panel.set_accounts(accounts)
     panel.show()
-    APP.processEvents()
-    panel.activity.grab()
     APP.processEvents()
 
     assert panel.size().width() == PANEL_MIN_WIDTH
-    assert panel.activity.width() <= panel.activity_scroll.viewport().width()
-    assert not panel.activity_scroll.horizontalScrollBar().isVisible()
+    assert not panel.accounts_scroll.horizontalScrollBar().isVisible()
     assert all(
         not scroll.horizontalScrollBar().isVisible()
         for scroll in panel.findChildren(QScrollArea)
@@ -2236,12 +2226,9 @@ def test_expanded_window_hides_ball_and_uses_compact_panel_size():
 
         assert widget.ball.isHidden()
         assert widget.panel.isVisible()
-        # 小屏幕/无头测试后端会把面板限制在当前工作区内。
-        assert widget.width() <= 820
-        assert widget.height() == ANNUAL_PANEL_HEIGHT
-        widget.panel.minute_activity_button.click()
-        APP.processEvents()
-        assert widget.height() == PANEL_HEIGHT
+        # 多账号模式：未导入账号时面板收敛到最小高度。
+        assert widget.width() == 420
+        assert widget.height() == ACCOUNTS_MIN_PANEL_HEIGHT
         assert widget.mask().isEmpty()
 
         widget.toggle()
@@ -2586,30 +2573,29 @@ def test_panel_resizes_in_settings_without_refresh_and_restores_after_collapse(t
         handle = widget._panel_resize_handles[1]
         point = QPoint(3, 80)
         QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
-        QTest.mouseMove(handle, point - QPoint(120, 0))
+        QTest.mouseMove(handle, point + QPoint(120, 0))
         QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=point)
-        assert widget.width() == widget.panel.width() == 700
+        assert widget.width() == widget.panel.width() == 540
         assert not settings._save_pending
         assert widget._panel_width_save_timer.isActive()
         refresh.assert_not_called()
         settings.reject()
-        widget.panel.minute_activity_button.click()
-        assert widget.size() == QSize(700, PANEL_HEIGHT)
+        assert widget.width() == 540
         widget.collapse_panel()
         assert widget.width() == widget._compact_size()
         assert all(handle.isHidden() for handle in widget._panel_resize_handles)
         widget.expand_panel()
-        assert widget.width() == 700
+        assert widget.width() == 540
         # 关闭发生在防抖保存之前时，也必须留下最后一次宽度。
         widget.close()
-        assert config_manager.load_panel_width() == 700
+        assert config_manager.load_panel_width() == 540
         APP.processEvents()
         assert widget.isHidden()
         widget.deleteLater()
         APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         restored = FloatingWidget()
         restored.expand_panel()
-        assert restored.width() == 700
+        assert restored.width() == 540
         restored.close()
         restored.deleteLater()
         APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -2625,6 +2611,8 @@ def test_panel_edges_resize_and_keep_opposite_edge_anchored(left, tmp_path):
     ):
         widget = FloatingWidget()
         widget.expand_panel()
+        # 先固定到一个两侧拖拽都有余量的基准宽度（默认 420 已贴下限）。
+        widget._set_panel_width(700)
         widget.move(-1400, 120)
         APP.processEvents()
         origin_x = widget.x()
@@ -2635,11 +2623,12 @@ def test_panel_edges_resize_and_keep_opposite_edge_anchored(left, tmp_path):
         QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
         QTest.mouseMove(handle, point + QPoint(120 if left else -120, 0))
         QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=point)
-        assert widget.width() == 700
+        # 两种拖法都是把面板收窄 120px；左把手向右拖、右把手向左拖。
+        assert widget.width() == 580
         assert widget.x() == origin_x + (120 if left else 0)
         assert widget._panel_resize_origin is None
         widget._set_panel_width(1)
-        assert widget.width() == 640
+        assert widget.width() == 420
         widget._set_panel_width(5000)
         assert widget.width() == 820
         widget.close()
@@ -3227,6 +3216,31 @@ def test_settings_loads_and_persists_background_provider_selection():
         window.background_provider_checks["mimo"].setChecked(False)
         assert window._values()["BACKGROUND_PROVIDER_IDS"] == ["codex"]
         window.close()
+
+
+def test_coding_plan_providers_render_fields_and_persist_config_keys():
+    for provider_id in ("zhipu", "minimax"):
+        values = {
+            **config_manager.all_config(),
+            "ACTIVE_PROVIDER": provider_id,
+            f"{provider_id.upper()}_TOKEN": "",
+        }
+        with (
+            patch("ui.qt_settings.config_manager.load_config", return_value=values),
+            patch("ui.qt_settings.config_manager.all_config", return_value=values),
+        ):
+            window = SettingsWindow()
+            try:
+                assert window.provider_combo.currentData() == provider_id
+                assert list(window._provider_widgets) == ["TOKEN", "BASE"]
+                assert window._provider_widgets["TOKEN"].echoMode() == QLineEdit.EchoMode.Password
+                window._provider_widgets["TOKEN"].setText("synthetic-key")
+                persisted = window._values()
+            finally:
+                window.close()
+        assert persisted[f"{provider_id.upper()}_TOKEN"] == "synthetic-key"
+        assert persisted[f"{provider_id.upper()}_BASE"] == values[f"{provider_id.upper()}_BASE"]
+        assert persisted["ACTIVE_PROVIDER"] == provider_id
 
 
 def test_settings_codex_home_uses_read_only_directory_picker():

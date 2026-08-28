@@ -23,15 +23,20 @@ from api.providers.codex import CodexProvider
 from api.providers.cursor import CursorProvider
 from api.providers.deepseek import DeepSeekProvider
 from api.providers.mimo import MiMoProvider
+from api.providers.minimax import MiniMaxProvider
 from api.providers.nayuto import NayutoProvider
+from api.providers.zhipu import ZhipuProvider
 from config import runtime as config_manager
 
+# 新 provider 一律追加在尾部：dict 顺序决定未配置时的默认回退，不能打乱现有顺序。
 PROVIDERS: dict[str, type[Provider]] = {
     DeepSeekProvider.id: DeepSeekProvider,
     MiMoProvider.id: MiMoProvider,
     CodexProvider.id: CodexProvider,
     CursorProvider.id: CursorProvider,
     NayutoProvider.id: NayutoProvider,
+    ZhipuProvider.id: ZhipuProvider,
+    MiniMaxProvider.id: MiniMaxProvider,
 }
 
 

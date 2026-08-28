@@ -113,6 +113,15 @@ def format_codex_reset_time(value: datetime | None, *, compact: bool = False) ->
     return f"{local_value.month}月{local_value.day}日 {local_value:%H:%M}重置"
 
 
+def format_weekly_reset_date(value: datetime | None) -> str:
+    """周窗重置只展示日期（如 9月4日重置）；无时间时提示未知。"""
+
+    if value is None:
+        return "重置时间未知"
+    local_value = value.astimezone() if value.tzinfo is not None else value
+    return f"{local_value.month}月{local_value.day}日重置"
+
+
 def format_plan_active_until(value: datetime | None) -> str:
     if value is None:
         return "--"

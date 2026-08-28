@@ -53,8 +53,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from api.aggregator import AccountQuota
 from api.providers import PROVIDERS, list_providers
+from api.providers.base import QuotaWindow
 from config import runtime as config_manager
+from config.defaults import UI_PROVIDER_WHITELIST
 from core.identity import APP_DISPLAY_NAME
 from data.store import TokenData
 from ui.activity import compact_tokens
@@ -68,6 +71,7 @@ from ui.formatting import (
     format_quota_metric,
     format_reset_countdown,
     format_token_axis,
+    format_weekly_reset_date,
     is_codex_spark_quota,
 )
 from ui.i18n import add_item, bind_text, current_language, tr, ui_locale
@@ -79,7 +83,7 @@ from ui.qt_theme import (
     theme_controller,
 )
 
-PANEL_MIN_WIDTH = 640
+PANEL_MIN_WIDTH = 420
 PANEL_MAX_WIDTH = 820
 PANEL_HEIGHT = 550
 HEADER_HEIGHT = 42
@@ -91,6 +95,14 @@ STATISTICS_SECTION_HEIGHT = 76
 STATUS_SECTION_HEIGHT = 40
 SECTION_SPACING = 0
 SECTION_HORIZONTAL_MARGIN = 22
+# 多账号卡片视图：面板只渲染白名单 provider 的账号卡片。
+ACCOUNTS_MODE = bool(UI_PROVIDER_WHITELIST)
+ACCOUNTS_CARD_HEIGHT = 128
+ACCOUNTS_MIN_PANEL_HEIGHT = 300
+ACCOUNTS_MAX_PANEL_HEIGHT = 600
+# 窗口子块标题按窗口 id 固定；未知窗口回退 provider 原始标题。
+ACCOUNTS_WINDOW_TITLES = {"five_hour": "5 小时剩余", "weekly": "每周剩余"}
+ACCOUNTS_LOW_WATER_PERCENT = 20
 
 
 def _make_plot_background_transparent(plot: pg.PlotWidget) -> None:
@@ -2435,6 +2447,195 @@ class StatisticsCard(QFrame):
                 bind_text(value, "", method='setToolTip')
 
 
+class AccountProgressBar(QWidget):
+    """圆角额度进度条：进度 = 剩余水位，颜色随水位在主题绿/警示红间切换。"""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedHeight(8)
+        self._ratio = 0.0
+        self._fill_color = QColor(current_theme().success)
+
+    @property
+    def ratio(self) -> float:
+        return self._ratio
+
+    @property
+    def fill_color(self) -> QColor:
+        return self._fill_color
+
+    def set_state(self, ratio: float, color: QColor) -> None:
+        self._ratio = max(0.0, min(1.0, float(ratio)))
+        self._fill_color = QColor(color)
+        self.update()
+
+    def refresh_theme(self) -> None:
+        # 主题切换后按新主题色重画，水位比值保持不变。
+        self.set_state(self._ratio, self.water_color(self._ratio))
+
+    @staticmethod
+    def water_color(ratio: float) -> QColor:
+        tokens = current_theme()
+        low = ratio * 100 <= ACCOUNTS_LOW_WATER_PERCENT
+        return QColor(tokens.danger if low else tokens.success)
+
+    def paintEvent(self, _event) -> None:
+        tokens = current_theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        radius = self.height() / 2
+        painter.setBrush(QColor(tokens.elevated))
+        painter.drawRoundedRect(self.rect(), radius, radius)
+        if self._ratio > 0:
+            width = max(self.height(), int(self.width() * self._ratio))
+            painter.setBrush(self._fill_color)
+            painter.drawRoundedRect(0, 0, width, self.height(), radius, radius)
+        painter.end()
+
+
+def _set_widget_visible(widget: QWidget, visible: bool) -> None:
+    """设置显隐并强制 WA_WState_Hidden 标志。
+
+    Qt 对“父级尚未定型时子控件 setVisible(False)”会延迟处理，父级随后
+    setVisible(True) 时会级联把子控件重新显示；显式补写标志让该状态在
+    父级展开后依然生效。
+    """
+
+    widget.setVisible(visible)
+    widget.setAttribute(Qt.WidgetAttribute.WA_WState_Hidden, not visible)
+
+
+class QuotaWindowBlock(QWidget):
+    """账号卡片里的单窗口子块：小标题 + 剩余大数字 + 重置小字 + 进度条。"""
+
+    def __init__(self, window: QuotaWindow, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._window = window
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.title_label = bind_text(QLabel(), ACCOUNTS_WINDOW_TITLES.get(window.id, window.title))
+        self.title_label.setObjectName("accountWindowTitle")
+        self.percent_label = QLabel()
+        self.percent_label.setObjectName("accountPercent")
+        self.reset_label = QLabel()
+        self.reset_label.setObjectName("accountResetText")
+        self.progress = AccountProgressBar()
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.percent_label)
+        layout.addWidget(self.reset_label)
+        layout.addWidget(self.progress)
+        layout.addStretch(1)
+        self.set_window(window)
+
+    def set_window(self, window: QuotaWindow) -> None:
+        self._window = window
+        remaining = max(0.0, min(100.0, 100 - window.used_percent))
+        self.percent_label.setText(f"{remaining:.0f}%")
+        self.percent_label.setStyleSheet(
+            f"color: {AccountProgressBar.water_color(remaining / 100).name()};"
+        )
+        self.progress.set_state(remaining / 100, AccountProgressBar.water_color(remaining / 100))
+        self.apply_visibility()
+
+    def apply_visibility(self) -> None:
+        """无重置时间的窗口只展示剩余百分比；其余展示重置时间小字。"""
+
+        if self._window.resets_at is None:
+            bind_text(self.reset_label, "")
+            _set_widget_visible(self.reset_label, False)
+            return
+        if self._window.id == "weekly":
+            text = format_weekly_reset_date(self._window.resets_at)
+        else:
+            text = format_reset_countdown(self._window.resets_at)
+        bind_text(self.reset_label, text)
+        _set_widget_visible(self.reset_label, True)
+
+    def refresh_theme(self) -> None:
+        self.percent_label.setStyleSheet(
+            f"color: {AccountProgressBar.water_color(self.progress.ratio).name()};"
+        )
+        self.progress.refresh_theme()
+
+
+class AccountCard(QFrame):
+    """多账号面板的单账号卡片：标题行 + 套餐徽章 + 窗口进度条或错误摘要。"""
+
+    def __init__(self, account: AccountQuota, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("accountCard")
+        self.setFixedHeight(ACCOUNTS_CARD_HEIGHT)
+        self._account = account
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        self._title_label = QLabel()
+        self._title_label.setObjectName("accountTitle")
+        self._plan_badge = QLabel()
+        self._plan_badge.setObjectName("accountPlanBadge")
+        header.addWidget(self._title_label)
+        header.addStretch(1)
+        header.addWidget(self._plan_badge)
+        layout.addLayout(header)
+
+        self._error_bar = QFrame()
+        self._error_bar.setObjectName("accountErrorBar")
+        error_layout = QHBoxLayout(self._error_bar)
+        error_layout.setContentsMargins(10, 5, 10, 5)
+        self._error_label = QLabel()
+        self._error_label.setObjectName("accountErrorText")
+        error_layout.addWidget(self._error_label)
+        layout.addWidget(self._error_bar)
+
+        self._windows_row = QWidget()
+        windows_layout = QHBoxLayout(self._windows_row)
+        windows_layout.setContentsMargins(0, 0, 0, 0)
+        windows_layout.setSpacing(16)
+        self._window_blocks: dict[str, QuotaWindowBlock] = {}
+        for window in account.windows:
+            block = QuotaWindowBlock(window, self._windows_row)
+            self._window_blocks[window.id] = block
+            windows_layout.addWidget(block, 1)
+        layout.addWidget(self._windows_row, 1)
+        layout.addStretch(1)
+        self._render()
+
+    def _render(self) -> None:
+        account = self._account
+        title = (
+            f"{account.provider_name} · {account.label}" if account.label
+            else account.provider_name
+        )
+        bind_text(self._title_label, tr(title))
+        plan = account.plan.strip()
+        bind_text(self._plan_badge, plan)
+        _set_widget_visible(self._plan_badge, bool(plan))
+        has_error = bool(account.error)
+        self._error_bar.setVisible(has_error)
+        bind_text(self._error_label, tr(account.error) if has_error else "")
+        self._windows_row.setVisible(not has_error and bool(self._window_blocks))
+        # 行可见性定型后再重申子控件显隐（Qt 会清掉父级展开前的隐藏标志）。
+        for block in self._window_blocks.values():
+            block.apply_visibility()
+
+    def refresh_theme(self) -> None:
+        for block in self._window_blocks.values():
+            block.refresh_theme()
+        self.update()
+
+    def refresh_language(self) -> None:
+        """语言切换后重建账号相关文案（标题、套餐徽章与错误摘要）。"""
+
+        self._render()
+
+
 class MainPanel(QFrame):
     settings_requested = Signal()
     refresh_requested = Signal()
@@ -2755,6 +2956,40 @@ class MainPanel(QFrame):
         content.addWidget(self.statistics)
         self.bottom_section = self.statistics
 
+        # 多账号视图：垂直滚动的账号卡片列表，替代单平台用量区块。
+        self._account_cards: list[AccountCard] = []
+        self._accounts_data: list[AccountQuota] = []
+        self._accounts_last_success: datetime | None = None
+        self.accounts_scroll = QScrollArea()
+        self.accounts_scroll.setObjectName("accountsScroll")
+        self.accounts_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.accounts_scroll.setWidgetResizable(True)
+        self.accounts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.accounts_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.accounts_container = QWidget()
+        self.accounts_container.setObjectName("panelRoot")
+        self.accounts_layout = QVBoxLayout(self.accounts_container)
+        self.accounts_layout.setContentsMargins(
+            SECTION_HORIZONTAL_MARGIN, 10, SECTION_HORIZONTAL_MARGIN, 10
+        )
+        self.accounts_layout.setSpacing(8)
+        self.accounts_empty_hint = bind_text(
+            QLabel(), "尚未导入账号；请使用 scripts/import_ccswitch_plans.py 导入"
+        )
+        self.accounts_empty_hint.setObjectName("accountsEmptyHint")
+        self.accounts_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.accounts_empty_hint.setWordWrap(True)
+        self.accounts_layout.addWidget(self.accounts_empty_hint)
+        self.accounts_layout.addStretch(1)
+        self.accounts_scroll.setWidget(self.accounts_container)
+        content.addWidget(self.accounts_scroll, 1)
+        if ACCOUNTS_MODE:
+            # 白名单模式下用量区块整体退场；代码保留，便于后续厂商回归时复用。
+            self.provider_quick_combo.hide()
+            self.top_section.hide()
+            self.activity_card.hide()
+            self.statistics.hide()
+
         footer_widget = QWidget()
         footer_widget.setObjectName("statusBar")
         footer_widget.setFixedHeight(STATUS_SECTION_HEIGHT)
@@ -2791,6 +3026,8 @@ class MainPanel(QFrame):
     def refresh_language_layout(self) -> None:
         # 外语短标签的字宽不同；按实际文字安排固定按钮，避免最小面板宽度下互相覆盖。
         chinese = current_language() == "zh-cn"
+        for card in self._account_cards:
+            card.refresh_language()
         for button in (self.annual_activity_button, self.minute_activity_button):
             button.ensurePolished()
             width = 72 if chinese else max(42, button.fontMetrics().horizontalAdvance(button.text()) + 20)
@@ -3196,6 +3433,8 @@ class MainPanel(QFrame):
     def _on_theme_changed(self, mode: str, resolved: str) -> None:
         self.set_theme_mode(mode, resolved)
         self.status_dot.refresh_theme()
+        for card in self._account_cards:
+            card.refresh_theme()
         if self._minute_chart is not None:
             self._minute_chart.refresh_theme()
         self.minute_date_edit.refresh_theme()
@@ -3460,6 +3699,86 @@ class MainPanel(QFrame):
         bind_text(self.status_text, status)
         self.status_dot.set_role(self.status_role(data, loading or refreshing))
         bind_text(self.updated_text, self.relative_update_time(data))
+
+    def set_accounts(
+        self,
+        accounts: list[AccountQuota],
+        *,
+        refreshing: bool = False,
+        last_success: datetime | None = None,
+    ) -> None:
+        """多账号视图数据入口：重建卡片并同步状态条与面板高度。"""
+
+        self._accounts_data = list(accounts)
+        self._accounts_last_success = last_success
+        self._render_account_cards()
+        self._update_accounts_status(self._accounts_data, refreshing, last_success)
+        self._adjust_accounts_height(len(self._accounts_data))
+
+    def _render_account_cards(self) -> None:
+        # 布局尾部固定保留 [empty_hint, stretch] 两项，卡片插在它们之前。
+        while self.accounts_layout.count() > 2:
+            item = self.accounts_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._account_cards = []
+        self.accounts_empty_hint.setVisible(not self._accounts_data)
+        for index, account in enumerate(self._accounts_data):
+            card = AccountCard(account)
+            self._account_cards.append(card)
+            self.accounts_layout.insertWidget(index, card)
+
+    def _update_accounts_status(
+        self,
+        accounts: list[AccountQuota],
+        refreshing: bool,
+        last_success: datetime | None,
+    ) -> None:
+        errors = [account.error for account in accounts if account.error]
+        if refreshing:
+            role = "accent"
+        elif accounts and len(errors) == len(accounts):
+            role = "danger"
+        elif errors:
+            role = "warning"
+        else:
+            role = "success"
+        self.status_dot.set_role(role)
+        if not accounts:
+            bind_text(self.status_text, "尚未导入账号")
+        elif errors and len(errors) == len(accounts):
+            bind_text(self.status_text, "账号额度查询失败")
+        elif errors:
+            bind_text(self.status_text, "部分账号数据异常，显示可用数据")
+        else:
+            bind_text(self.status_text, "订阅额度已更新")
+        updated = self._accounts_update_time(last_success)
+        count_text = (
+            tr("共 {n} 个账号", n=len(accounts)) if accounts else tr("尚未导入账号")
+        )
+        bind_text(self.updated_text, f"{updated} · {count_text}")
+
+    @staticmethod
+    def _accounts_update_time(last_success: datetime | None) -> str:
+        if last_success is None:
+            return tr("等待首次更新")
+        seconds = max(0, int((datetime.now() - last_success).total_seconds()))
+        if seconds < 60:
+            return tr("数据更新于刚刚")
+        minutes = seconds // 60
+        if minutes < 60:
+            return tr("数据更新于 {n} 分钟前", n=minutes)
+        return tr("数据更新于 {n} 小时前", n=minutes // 60)
+
+    def _adjust_accounts_height(self, count: int) -> None:
+        if not ACCOUNTS_MODE:
+            return
+        cards_height = count * ACCOUNTS_CARD_HEIGHT + (count - 1) * 8 + 20 if count else 80
+        height = HEADER_HEIGHT + STATUS_SECTION_HEIGHT + cards_height
+        height = max(ACCOUNTS_MIN_PANEL_HEIGHT, min(ACCOUNTS_MAX_PANEL_HEIGHT, height))
+        self.setFixedHeight(height)
+        self.activity_height_changed.emit(height)
 
     @staticmethod
     def status_role(data: TokenData, loading: bool = False) -> str:

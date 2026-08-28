@@ -301,6 +301,39 @@ QFrame#card:hover {{
     background: {panel_elevated};
     border-color: {tokens.border_hover};
 }}
+QScrollArea#accountsScroll {{
+    background: transparent;
+    border: 0;
+}}
+QFrame#accountCard {{
+    background: {panel_surface};
+    border: 1px solid {tokens.border};
+    border-radius: 14px;
+}}
+QFrame#accountCard:hover {{
+    background: {panel_elevated};
+    border-color: {tokens.border_hover};
+}}
+QLabel#accountTitle {{ color: {tokens.value}; font-size: 14px; font-weight: 600; }}
+QLabel#accountPlanBadge {{
+    color: {tokens.accent_text};
+    background: {tokens.accent_soft};
+    border: 1px solid {tokens.accent};
+    border-radius: 9px;
+    padding: 1px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}}
+QLabel#accountWindowTitle {{ color: {tokens.subtext}; font-size: 11px; }}
+QLabel#accountResetText {{ color: {tokens.muted}; font-size: 10px; }}
+QLabel#accountPercent {{ color: {tokens.value}; font-size: 24px; font-weight: 700; }}
+QFrame#accountErrorBar {{
+    background: {tokens.surface};
+    border: 1px solid {divider_color};
+    border-radius: 9px;
+}}
+QLabel#accountErrorText {{ color: {tokens.subtext}; font-size: 11px; }}
+QLabel#accountsEmptyHint {{ color: {tokens.muted}; font-size: 12px; }}
 QFrame#settingsCard {{
     background: {tokens.surface};
     border: 1px solid {tokens.border};

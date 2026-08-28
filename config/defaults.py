@@ -12,12 +12,30 @@ SECRET_KEYS = (
     "MIMO_API_PLATFORM_PH",
     "MIMO_API_KEY",
     "NAYUTO_AUTH",
+    "ZHIPU_TOKEN",
+    "MINIMAX_TOKEN",
 )
+# 多账号 token 按下标存键（ZHIPU_TOKEN_0…），前缀命中即视为秘密。
+SECRET_KEY_PREFIXES = ("ZHIPU_TOKEN", "MINIMAX_TOKEN")
+# 面板只展示这些 provider 的账号；后续接入新厂商改这一处即可。
+UI_PROVIDER_WHITELIST = ("zhipu", "minimax")
+
+
+def is_secret_key(key: str) -> bool:
+    """旧精确键与序号化账号 token 键统一走前缀判定。"""
+
+    if key in SECRET_KEYS:
+        return True
+    return any(key.startswith(prefix) for prefix in SECRET_KEY_PREFIXES)
 OFFICIAL_HOSTS = {
     "platform.deepseek.com",
     "api.deepseek.com",
     "platform.xiaomimimo.com",
     "nayutoai.xyz",
+    "open.bigmodel.cn",
+    "api.z.ai",
+    "api.minimaxi.com",
+    "api.minimax.io",
 }
 DEFAULT_CONFIG: dict[str, Any] = {
     "DEEPSEEK_API_KEY": "",
@@ -35,6 +53,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "MIMO_BASE": "https://platform.xiaomimimo.com",
     "NAYUTO_AUTH": "",
     "NAYUTO_BASE": "https://nayutoai.xyz",
+    "ZHIPU_TOKEN": "",
+    "ZHIPU_BASE": "https://open.bigmodel.cn",
+    "ZHIPU_ACCOUNTS": [],
+    "MINIMAX_TOKEN": "",
+    "MINIMAX_BASE": "https://api.minimaxi.com",
+    "MINIMAX_ACCOUNTS": [],
     "CODEX_HOME": "",
     "CURSOR_GLOBAL_STORAGE": "",
     "REFRESH_INTERVAL": 60_000,
@@ -83,7 +107,7 @@ FIELD_META: dict[str, dict[str, Any]] = {
     "AUTO_START_ENABLED": {"kind": "bool"},
     "BACKGROUND_PROVIDER_IDS": {
         "kind": "provider_list",
-        "choices": ("deepseek", "mimo", "codex", "cursor", "nayuto"),
+        "choices": ("deepseek", "mimo", "codex", "cursor", "nayuto", "zhipu", "minimax"),
     },
     "UI_THEME": {"kind": "choice", "choices": ("system", "light", "dark")},
     "UI_LANGUAGE": {
@@ -96,9 +120,19 @@ FIELD_META: dict[str, dict[str, Any]] = {
     "UI_LIGHT_PANEL_OPACITY": {"kind": "int", "min": 70, "max": 100},
     "UI_DARK_PANEL_OPACITY": {"kind": "int", "min": 70, "max": 100},
     "UPDATE_AUTO_CHECK_ENABLED": {"kind": "bool"},
+    "ZHIPU_ACCOUNTS": {"kind": "account_list"},
+    "MINIMAX_ACCOUNTS": {"kind": "account_list"},
     "MINUTE_USAGE_CHART_TYPE": {"kind": "choice", "choices": ("bar", "line")},
     "MINUTE_USAGE_INTERVAL_MINUTES": {"kind": "int", "min": 1, "max": 60},
     "MINUTE_USAGE_RETENTION_DAYS": {"kind": "int", "min": 1, "max": 365},
 }
 
-__all__ = ["DEFAULT_CONFIG", "FIELD_META", "OFFICIAL_HOSTS", "SECRET_KEYS"]
+__all__ = [
+    "DEFAULT_CONFIG",
+    "FIELD_META",
+    "OFFICIAL_HOSTS",
+    "SECRET_KEYS",
+    "SECRET_KEY_PREFIXES",
+    "UI_PROVIDER_WHITELIST",
+    "is_secret_key",
+]
