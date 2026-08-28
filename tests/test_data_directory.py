@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-import data_directory
+from data import directory as data_directory
 
 
 def _legacy_data(path: Path) -> None:
@@ -85,7 +85,7 @@ def test_copy_and_atomic_switch_failures_keep_source(tmp_path):
     _legacy_data(source)
     target = tmp_path / "app" / "data"
 
-    with patch("data_directory.shutil.copytree", side_effect=OSError("disk full")):
+    with patch("data.directory.shutil.copytree", side_effect=OSError("disk full")):
         with pytest.raises(OSError):
             data_directory.migrate_legacy_data(source, target)
     assert source.exists()
@@ -118,7 +118,7 @@ def test_explicit_directory_has_highest_priority(tmp_path):
 
 def test_unwritable_install_uses_local_fallback(tmp_path):
     fallback = tmp_path / "local" / "TokenMeter" / "data"
-    with patch("data_directory._is_writable", side_effect=lambda path: path == fallback):
+    with patch("data.directory._is_writable", side_effect=lambda path: path == fallback):
         result = data_directory.resolve_data_dir(
             install_dir=tmp_path / "app",
             legacy_dir=tmp_path / "missing",

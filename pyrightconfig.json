@@ -5,11 +5,10 @@
   "typeCheckingMode": "basic",
   "include": [
     "main.py",
-    "config_manager.py",
     "config",
     "api/providers/base.py",
     "api/providers/deepseek.py",
     "api/deepseek.py",
-    "app_update.py"
+    "updater/client.py"
   ]
 }

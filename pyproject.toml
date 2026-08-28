@@ -3,7 +3,6 @@ target-version = "py312"
 line-length = 100
 include = [
     "main.py",
-    "config_manager.py",
     "config/*.py",
     "api/deepseek.py",
     "api/deepseek_pricing.py",

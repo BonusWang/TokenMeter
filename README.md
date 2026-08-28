@@ -172,20 +172,23 @@ python scripts/build_release.py
 TokenMeter/
 ├── api/                 # 平台 API、Provider 与计价规则
 ├── config/              # 配置、凭据、迁移与运行时状态
-├── core/                # 应用身份等基础元数据
+├── core/                # 应用身份、自启与桌宠扩展安装管理
 ├── data/                # 数据目录、聚合与 SQLite 历史缓存
 ├── updater/             # 更新客户端与独立更新器
 ├── ui/                  # PySide6 界面
+├── pet_host/            # 独立 .NET 桌宠宿主与版本清单
+├── third_party/VPet/    # 随仓库维护的桌宠核心源码与授权
 ├── packaging/           # PyInstaller、安装器与 Windows 版本资源
 ├── scripts/             # 构建与发布脚本
+├── assets/              # 应用图标与不同尺寸的图标导出
 ├── docs/                # 项目结构说明与 README 图片
-├── examples/            # 示例配置
+├── examples/            # 示例配置与桌宠预览
 ├── release-notes/       # 版本发布说明
 ├── tests/               # 单元与 Qt 测试
 └── main.py              # 应用入口
 ```
 
-完整说明见 [项目目录结构](docs/PROJECT_STRUCTURE.md)。
+模块职责、主调用链、导入入口和精简顺序见 [项目目录结构](docs/PROJECT_STRUCTURE.md)。
 
 ## 故障排查
 

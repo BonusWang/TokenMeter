@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 
-import config_manager
+from config import runtime as config_manager
 from api import browser_cookie
 from api.providers.deepseek import DeepSeekProvider
 from api.providers.mimo import MiMoProvider

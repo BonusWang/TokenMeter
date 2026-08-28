@@ -7,7 +7,7 @@ os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 import pytest
 from unittest.mock import Mock, patch
 
-from app_update import (
+from updater.client import (
     DownloadBundle,
     DownloadedAsset,
     GITHUB_LATEST_RELEASE_API_URL,
@@ -132,7 +132,7 @@ def test_download_bundle_downloads_only_verified_setup_to_update_cache(tmp_path)
         return digest
 
     with (
-        patch("app_update.config_manager.updates_dir", return_value=tmp_path / "updates"),
+        patch("updater.client.config_manager.updates_dir", return_value=tmp_path / "updates"),
         patch.object(client, "_load_checksums", return_value={release.setup_asset.name.lower(): digest}),
         patch.object(client, "_download_asset", side_effect=fake_download) as download,
     ):
@@ -147,7 +147,7 @@ def test_download_bundle_rejects_checksum_manifest_without_setup(tmp_path):
     release = _setup_release()
     client = GitHubReleaseClient()
     with (
-        patch("app_update.config_manager.updates_dir", return_value=tmp_path / "updates"),
+        patch("updater.client.config_manager.updates_dir", return_value=tmp_path / "updates"),
         patch.object(client, "_load_checksums", return_value={"other.exe": "a" * 64}),
         patch.object(client, "_download_asset") as download,
     ):
@@ -169,14 +169,14 @@ def test_launch_installer_uses_silent_update_parameters_and_original_install_dir
     )
 
     with (
-        patch("app_update.sys.executable", str(current_exe)),
-        patch("app_update.config_manager.updates_dir", return_value=tmp_path / "data" / "updates"),
+        patch("updater.client.sys.executable", str(current_exe)),
+        patch("updater.client.config_manager.updates_dir", return_value=tmp_path / "data" / "updates"),
         patch(
             "data.history.backup_usage_database",
             return_value=tmp_path / "data" / "backups" / "usage.db",
         ) as backup_usage,
-        patch("app_update.config_manager.save_pending_update_cleanup") as save_cleanup,
-        patch("app_update.subprocess.Popen") as popen,
+        patch("updater.client.config_manager.save_pending_update_cleanup") as save_cleanup,
+        patch("updater.client.subprocess.Popen") as popen,
     ):
         launch_installer(bundle)
 
@@ -210,12 +210,12 @@ def test_installer_launch_failure_keeps_current_program_and_clears_cleanup_state
     clear = Mock()
 
     with (
-        patch("app_update.sys.executable", str(current_exe)),
-        patch("app_update.config_manager.updates_dir", return_value=tmp_path / "data" / "updates"),
+        patch("updater.client.sys.executable", str(current_exe)),
+        patch("updater.client.config_manager.updates_dir", return_value=tmp_path / "data" / "updates"),
         patch("data.history.backup_usage_database", return_value=None),
-        patch("app_update.config_manager.save_pending_update_cleanup"),
-        patch("app_update.config_manager.clear_pending_update_cleanup", clear),
-        patch("app_update.subprocess.Popen", side_effect=OSError("blocked")),
+        patch("updater.client.config_manager.save_pending_update_cleanup"),
+        patch("updater.client.config_manager.clear_pending_update_cleanup", clear),
+        patch("updater.client.subprocess.Popen", side_effect=OSError("blocked")),
     ):
         with pytest.raises(UpdateError, match="安装包"):
             launch_installer(bundle)
@@ -237,11 +237,11 @@ def test_pre_update_backup_failure_blocks_installer_launch(tmp_path):
     )
 
     with (
-        patch("app_update.sys.executable", str(current_exe)),
-        patch("app_update.config_manager.updates_dir", return_value=tmp_path / "data" / "updates"),
+        patch("updater.client.sys.executable", str(current_exe)),
+        patch("updater.client.config_manager.updates_dir", return_value=tmp_path / "data" / "updates"),
         patch("data.history.backup_usage_database", side_effect=OSError("disk full")),
-        patch("app_update.config_manager.save_pending_update_cleanup") as save_cleanup,
-        patch("app_update.subprocess.Popen") as popen,
+        patch("updater.client.config_manager.save_pending_update_cleanup") as save_cleanup,
+        patch("updater.client.subprocess.Popen") as popen,
     ):
         with pytest.raises(UpdateError, match="usage.db"):
             launch_installer(bundle)
@@ -293,13 +293,13 @@ def _run_cleanup(tmp_path, cleanup_paths):
     updates.mkdir(exist_ok=True)
     clear = Mock()
     with (
-        patch("app_update.config_manager.load_pending_update_cleanup", return_value={
+        patch("updater.client.config_manager.load_pending_update_cleanup", return_value={
             "version": 1,
             "cleanup_paths": cleanup_paths,
         }),
-        patch("app_update.config_manager.updates_dir", return_value=updates),
-        patch("app_update.config_manager.clear_pending_update_cleanup", clear),
-        patch("app_update.stable_target_path", return_value=tmp_path / "TokenSpider.exe"),
+        patch("updater.client.config_manager.updates_dir", return_value=updates),
+        patch("updater.client.config_manager.clear_pending_update_cleanup", clear),
+        patch("updater.client.stable_target_path", return_value=tmp_path / "TokenSpider.exe"),
     ):
         cleanup_pending_update()
     clear.assert_called_once()
@@ -354,9 +354,9 @@ def test_update_cleanup_ignores_and_clears_damaged_manifest(tmp_path):
     manifest.write_text("{broken", encoding="utf-8")
     clear = Mock()
     with (
-        patch("app_update.config_manager.load_pending_update_cleanup", return_value={}),
-        patch("app_update.config_manager.PENDING_UPDATE_CLEANUP_PATH", manifest),
-        patch("app_update.config_manager.clear_pending_update_cleanup", clear),
+        patch("updater.client.config_manager.load_pending_update_cleanup", return_value={}),
+        patch("updater.client.config_manager.PENDING_UPDATE_CLEANUP_PATH", manifest),
+        patch("updater.client.config_manager.clear_pending_update_cleanup", clear),
     ):
         cleanup_pending_update()
     clear.assert_called_once()

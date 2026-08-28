@@ -14,7 +14,7 @@ import requests
 
 os.environ["APPDATA"] = str(Path.cwd() / ".test-appdata")
 
-import config_manager
+from config import runtime as config_manager
 from api.deepseek import APIError
 from api.providers import configured_provider_ids, list_providers
 from api.providers.base import QuotaMetric, build_session

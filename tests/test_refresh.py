@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from data.store import FetchError, PerProviderData, TokenData
-from deepseek_pricing import BEIJING_TIMEZONE, PricingState
+from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState
 from ui.qt_panel import MainPanel
 from ui.qt_widget import (
     BACKGROUND_PROVIDER_INTERVAL_MS,

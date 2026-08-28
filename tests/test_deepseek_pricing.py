@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from deepseek_pricing import BEIJING_TIMEZONE, pricing_state
+from api.deepseek_pricing import BEIJING_TIMEZONE, pricing_state
 
 
 DEFAULTS = {

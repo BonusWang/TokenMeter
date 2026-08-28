@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import config_manager
+from config import runtime as config_manager
 from config.defaults import DEFAULT_CONFIG
 from api.providers.base import QuotaMetric, QuotaWindow
-from app_update import CheckResult, ReleaseAsset, ReleaseInfo, SemVer
+from updater.client import CheckResult, ReleaseAsset, ReleaseInfo, SemVer
 from data.store import PerProviderData, TokenData
 from ui.geometry import WorkArea
 from ui.qt_ball import FloatingUsageBall, LiquidSurfaceState

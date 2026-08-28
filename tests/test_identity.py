@@ -1,4 +1,4 @@
-from app_identity import (
+from core.identity import (
     APP_DISPLAY_NAME,
     APP_STORAGE_NAME,
     GITHUB_REPOSITORY,
