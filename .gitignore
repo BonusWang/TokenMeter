@@ -1,4 +1,8 @@
 .venv/
+pet_host/bin/
+pet_host/obj/
+third_party/VPet/**/bin/
+third_party/VPet/**/obj/
 .venv-build/
 .venv-stale-*/
 __pycache__/

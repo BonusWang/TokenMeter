@@ -17,6 +17,7 @@ from typing import Any, Callable, Union
 from PySide6.QtCore import QRectF, QSignalBlocker, QSize, Qt, QThread, QTime, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -44,6 +45,7 @@ from PySide6.QtWidgets import (
 from api.providers import PROVIDERS, list_providers
 from api.providers.base import FetchError
 from config import runtime as config_manager
+from core import pet_extension
 from core.autostart import AutostartError, sync_autostart
 from core.identity import APP_DISPLAY_NAME, GITHUB_REPOSITORY_URL
 from data.store import TokenData
@@ -58,6 +60,9 @@ from ui.i18n import (
 )
 from ui.qt_theme import DARK_THEME, LIGHT_THEME, current_theme, fluent_icon, theme_controller
 from ui.qt_update import AppUpdateController
+from updater.client import (
+    DownloadCancelled, GitHubReleaseClient, PetReleaseInfo, compare_versions, format_bytes,
+)
 
 _CARD_PADDING = 18
 
@@ -216,11 +221,41 @@ class _CookieAcquireWorker(QThread):
         self.success.emit(_AcquiredCookie(cookie, direct_usable))
 
 
+class _PetExtensionWorker(QThread):
+    progress_changed = Signal(object)
+
+    def __init__(self, operation: str, parent=None, *, release: PetReleaseInfo | None = None):
+        super().__init__(parent)
+        self.operation = operation
+        self.error: Exception | None = None
+        self.release = release
+
+    def run(self) -> None:
+        try:
+            if self.operation == "check":
+                client = GitHubReleaseClient()
+                try:
+                    self.release = client.latest_pet_release(cancel_requested=self.isInterruptionRequested)
+                finally:
+                    client._session.close()
+            elif self.operation in {"install", "update"}:
+                pet_extension.download_and_install(
+                    self.progress_changed.emit, self.isInterruptionRequested,
+                    release=self.release, replace_existing=self.operation == "update",
+                )
+            else:
+                pet_extension.uninstall()
+        except Exception as exc:
+            self.error = exc
+
+
 class SettingsWindow(QDialog):
     theme_requested = Signal(str)
     appearance_preview_requested = Signal(str, str, int)
     appearance_requested = Signal(str, str, int)
     save_state_changed = Signal(str, str)
+    pet_update_started = Signal()
+    pet_update_finished = Signal()
 
     def __init__(
         self,
@@ -242,6 +277,9 @@ class SettingsWindow(QDialog):
             self.setMaximumWidth(720)
         self.on_saved = on_saved
         self.update_controller = update_controller
+        self._pet_worker: _PetExtensionWorker | None = None
+        self._pet_release: PetReleaseInfo | None = None
+        QApplication.instance().aboutToQuit.connect(self.stop_pet_task)
         self._worker: ConnectionWorker | None = None
         self._cookie_acquire_worker: "_CookieAcquireWorker | None" = None
         self._cookie_acquire_provider_id = ""
@@ -483,6 +521,48 @@ class SettingsWindow(QDialog):
         )
         behavior_layout.addStretch(1)
 
+        pet_layout = self._add_settings_page(
+            "桌宠", "下载安装桌宠扩展包后可启用；扩展独立更新，不影响主程序。"
+        )
+        self.vpet_check = _SettingsSwitch("启用 VPet 精简桌宠")
+        self._add_switch_row(
+            pet_layout, "启用 VPet 精简桌宠",
+            "启用后替代悬浮球，面板和主题保持不变。", self.vpet_check
+        )
+        self.pet_version_label = QLabel()
+        self.pet_version_label.setWordWrap(True)
+        self.pet_version_label.setProperty("tone", "muted")
+        pet_layout.addWidget(self.pet_version_label)
+        self.pet_status_label = QLabel()
+        self.pet_status_label.setWordWrap(True)
+        self.pet_status_label.setProperty("tone", "muted")
+        pet_layout.addWidget(self.pet_status_label)
+        pet_actions = QHBoxLayout()
+        pet_actions.setSpacing(6)
+        self.pet_install_button = bind_text(QPushButton(), "下载桌宠扩展包")
+        self.pet_uninstall_button = bind_text(QPushButton(), "卸载桌宠扩展包")
+        self.pet_cancel_button = bind_text(QPushButton(), "取消下载")
+        self.pet_check_button = bind_text(QPushButton(), "检查桌宠更新")
+        self.pet_update_button = bind_text(QPushButton(), "更新桌宠扩展包")
+        self.pet_install_button.clicked.connect(self._install_pet)
+        self.pet_uninstall_button.clicked.connect(self._uninstall_pet)
+        self.pet_cancel_button.clicked.connect(self._cancel_pet_download)
+        self.pet_check_button.clicked.connect(lambda: self._start_pet_task("check"))
+        self.pet_update_button.clicked.connect(self._update_pet)
+        for button in (self.pet_install_button, self.pet_update_button, self.pet_uninstall_button,
+                       self.pet_check_button, self.pet_cancel_button):
+            pet_actions.addWidget(button)
+        pet_actions.addStretch(1)
+        pet_layout.addLayout(pet_actions)
+        self.pet_source_label = bind_text(QLabel(), lambda: tr(
+            "桌宠源码来源：{link}",
+            link='<a href="https://github.com/LorisYounger/VPet">LorisYounger/VPet</a>',
+        ))
+        self.pet_source_label.setWordWrap(True)
+        self.pet_source_label.setOpenExternalLinks(True)
+        pet_layout.addWidget(self.pet_source_label)
+        pet_layout.addStretch(1)
+
         runtime_layout = self._add_settings_page(
             "采集与统计", "设置数据刷新频率、后台采集平台与分时统计方式。"
         )
@@ -622,12 +702,163 @@ class SettingsWindow(QDialog):
         self.reset_appearance_button.clicked.connect(self._reset_appearance)
         theme_controller().changed.connect(self._on_theme_state_changed)
         self._bind_update_controller()
+        self._refresh_pet_controls()
         self._sync_window_size()
         self._connect_autosave()
         self._autosave_ready = True
         controller = language_controller()
         if controller is not None:
             controller.changed.connect(self._on_language_state_changed)
+
+    def _refresh_pet_controls(self, message: str = "") -> None:
+        busy = self._pet_worker is not None
+        manifest = pet_extension.installed_manifest()
+        removable = any(path.exists() for path in pet_extension.removable_directories())
+        # 只有校验完整的已安装扩展包才允许启用，不能把开发构建或旧安装目录当成下载完成。
+        available = manifest is not None
+        self.vpet_check.setEnabled(available and not busy)
+        if not available:
+            # 状态刷新只纠正显示，不触发自动保存去改写其他设置。
+            with QSignalBlocker(self.vpet_check):
+                self.vpet_check.setChecked(False)
+        self.pet_install_button.setEnabled(not busy and not removable)
+        self.pet_uninstall_button.setEnabled(not busy and removable)
+        cancellable = busy and self._pet_worker.operation != "uninstall"
+        self.pet_cancel_button.setVisible(cancellable)
+        self.pet_cancel_button.setEnabled(True)
+        self.pet_check_button.setVisible(not cancellable)
+        self.pet_check_button.setEnabled(not busy and removable)
+        version = str(manifest.get("version") or "") if manifest else ""
+        update_available = removable and self._pet_release is not None and (
+            not version or compare_versions(version, self._pet_release.version) < 0
+        )
+        self.pet_update_button.setVisible(update_available)
+        self.pet_update_button.setEnabled(not busy and removable and update_available)
+        # 更新替换下载、取消替换检查，避免任务状态变化后把同一行挤成四五个按钮。
+        self.pet_install_button.setVisible(not update_available)
+        bind_text(self.pet_version_label, f"桌宠版本：v{version}" if version else (
+            "桌宠版本：旧版（无版本号）" if available else
+            "桌宠版本：不可用" if removable else "桌宠版本：未安装"
+        ))
+        if not message:
+            message = (
+                "桌宠可用；启用后替代悬浮球，原有面板保持不变。" if available else
+                "桌宠扩展包不完整，请卸载后重新下载。" if removable else
+                "未安装桌宠扩展包；默认使用原有悬浮球和面板，按需下载。"
+            )
+        bind_text(self.pet_status_label, message)
+
+    def _update_pet(self) -> None:
+        if self._pet_worker is not None or self._pet_release is None:
+            return
+        answer = QMessageBox.question(
+            self, tr("更新桌宠扩展包"),
+            tr("将更新桌宠至 v{version}，期间暂停桌宠；主程序和主题保持不变。是否继续？",
+               version=self._pet_release.version),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._start_pet_task("update")
+
+    def _install_pet(self) -> None:
+        if self._pet_worker is not None:
+            return
+        answer = QMessageBox.question(
+            self, tr("下载桌宠扩展包"),
+            tr("将从 GitHub 下载独立桌宠资源和运行时，安装完成后可手动启用。是否继续？"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes and self._pet_worker is None:
+            self._start_pet_task("install")
+
+    def _uninstall_pet(self) -> None:
+        if self._pet_worker is not None:
+            return
+        answer = QMessageBox.question(
+            self, tr("卸载桌宠扩展包"),
+            tr("卸载将关闭桌宠并恢复悬浮球；保留账户、用量数据和桌宠偏好。是否继续？"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes or self._pet_worker is not None:
+            return
+        try:
+            # 先持久化关闭状态并通知主窗口停止子进程，再删除文件，避免占用和重启后反复报错。
+            config_manager.save_config({"VPET_ENABLED": False})
+            self.vpet_check.setChecked(False)
+            if self.on_saved:
+                self.on_saved()
+        except Exception as exc:
+            self._refresh_pet_controls(f"桌宠扩展操作失败：{exc}")
+            return
+        self._start_pet_task("uninstall")
+
+    def _start_pet_task(self, operation: str) -> None:
+        if self._pet_worker is not None:
+            return
+        worker = _PetExtensionWorker(operation, self, release=self._pet_release)
+        self._pet_worker = worker
+        worker.progress_changed.connect(self._pet_progress)
+        worker.finished.connect(self._pet_task_finished)
+        if operation == "update":
+            # 只暂停宿主，不改 VPET_ENABLED；失败后也能按原偏好恢复旧桌宠。
+            self.pet_update_started.emit()
+        self._refresh_pet_controls({
+            "install": "正在下载桌宠扩展包…", "update": "正在更新桌宠扩展包…",
+            "uninstall": "正在卸载桌宠扩展包…", "check": "正在检查桌宠更新…",
+        }[operation])
+        worker.start()
+
+    def _pet_progress(self, payload: dict) -> None:
+        bind_text(self.pet_status_label,
+                  f"正在下载桌宠：{format_bytes(int(payload.get('downloaded') or 0))} / "
+                  f"{format_bytes(int(payload.get('total') or 0))}")
+
+    def _cancel_pet_download(self) -> None:
+        if self._pet_worker is not None and self._pet_worker.operation != "uninstall":
+            self._pet_worker.requestInterruption()
+            self.pet_cancel_button.setEnabled(False)
+            bind_text(self.pet_status_label, "正在取消下载…")
+
+    def _pet_task_finished(self) -> None:
+        worker = self._pet_worker
+        if worker is None:
+            return
+        # finished 到达后再释放线程引用，设置页关闭或后台任务结束都不会销毁运行中的 QThread。
+        self._pet_worker = None
+        if isinstance(worker.error, DownloadCancelled):
+            message = "已取消下载，继续使用原有面板。"
+        elif worker.error is not None:
+            message = f"桌宠扩展操作失败：{worker.error}"
+        elif worker.operation == "check":
+            self._pet_release = worker.release
+            manifest = pet_extension.installed_manifest() or {}
+            version = manifest.get("version")
+            if self._pet_release is not None and (not version or compare_versions(version, self._pet_release.version) < 0):
+                message = f"发现桌宠新版本 v{self._pet_release.version}，可单独更新。"
+            else:
+                message = "桌宠已是当前主程序可用的最新版本。"
+        elif worker.operation == "install":
+            self._pet_release = None
+            message = "桌宠扩展包已安装，可打开上方开关启用。"
+        elif worker.operation == "update":
+            self._pet_release = None
+            message = "桌宠扩展已更新，主程序和主题保持不变。"
+        else:
+            self._pet_release = None
+            message = "桌宠扩展包已卸载，已恢复悬浮球，原有面板保持不变。"
+        if worker.operation == "update":
+            self.pet_update_finished.emit()
+        worker.deleteLater()
+        self._refresh_pet_controls(message)
+
+    def stop_pet_task(self) -> None:
+        if self._pet_worker is not None:
+            # 网络有超时，解压逐块响应取消；退出前等临时文件清理完，防止留下半安装目录。
+            self._pet_worker.requestInterruption()
+            self._pet_worker.wait()
 
     def _add_settings_page(self, title: str, description: str) -> QVBoxLayout:
         page = QWidget()
@@ -1416,6 +1647,7 @@ class SettingsWindow(QDialog):
         )
         self.sync_accent_check.setChecked(bool(values.get("UI_SYNC_ACCENT_COLOR", True)))
         self.edge_hide_check.setChecked(bool(values.get("EDGE_HIDE_ENABLED", True)))
+        self.vpet_check.setChecked(bool(values.get("VPET_ENABLED", False)))
         self.panel_auto_collapse_check.setChecked(
             bool(values.get("PANEL_AUTO_COLLAPSE_ON_DEACTIVATE", True))
         )
@@ -1500,6 +1732,7 @@ class SettingsWindow(QDialog):
             ],
             "UI_THEME": str(self.theme_combo.currentData() or "dark"),
             "EDGE_HIDE_ENABLED": self.edge_hide_check.isChecked(),
+            "VPET_ENABLED": self.vpet_check.isChecked(),
             "PANEL_AUTO_COLLAPSE_ON_DEACTIVATE": self.panel_auto_collapse_check.isChecked(),
             "AUTO_START_ENABLED": self.autostart_check.isChecked(),
             "UPDATE_AUTO_CHECK_ENABLED": self.auto_check_updates.isChecked(),

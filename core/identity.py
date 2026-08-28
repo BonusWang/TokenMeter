@@ -4,7 +4,7 @@ from __future__ import annotations
 
 APP_DISPLAY_NAME = "TokenMeter"
 APP_STORAGE_NAME = "TokenSpider"
-APP_VERSION = "1.13.2"
+APP_VERSION = "1.14.0-beta.1"
 
 # Keep the legacy storage and mutex identities so upgrades retain user data,
 # credentials, and single-instance coordination across every public rename.
@@ -14,6 +14,10 @@ MAIN_EXECUTABLE_NAME = "TokenMeter.exe"
 UPDATER_EXECUTABLE_NAME = "TokenMeterUpdater.exe"
 SETUP_RELEASE_ASSET_TEMPLATE = "TokenMeter-Setup-v{version}-x64.exe"
 SHA256_RELEASE_ASSET_NAME = "SHA256SUMS.txt"
+PET_RELEASE_ASSET_TEMPLATE = "TokenMeter-Pet-v{version}-x64.zip"
+PET_RELEASE_TAG_PREFIX = "pet-v"
+PET_MANIFEST_ASSET_NAME = "extension.json"
+PET_PROTOCOL = 1
 
 GITHUB_REPOSITORY = "zensoku142/TokenMeter"
 GITHUB_REPOSITORY_URL = f"https://github.com/{GITHUB_REPOSITORY}"

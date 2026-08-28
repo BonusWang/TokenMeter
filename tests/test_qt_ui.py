@@ -63,6 +63,7 @@ from ui.qt_settings import SettingsWindow
 from ui.qt_theme import DARK_THEME, LIGHT_THEME, configure_theme, current_theme
 from ui.qt_update import AppUpdateController, UpdatePromptDialog
 from ui.qt_widget import FloatingWidget
+from ui.vpet_host import VPetHost, usage_message
 
 APP = QApplication.instance() or QApplication([])
 configure_theme(APP, "dark")
@@ -2253,6 +2254,299 @@ def test_expanded_window_hides_ball_and_uses_compact_panel_size():
         widget.hide()
 
 
+def test_vpet_source_launch_uses_last_successful_side_by_side_build(tmp_path):
+    from ui import vpet_host
+
+    build = tmp_path / "build"
+    latest = build / "vpet-dev"
+    latest.mkdir(parents=True)
+    (latest / "TokenMeter.Pet.exe").touch()
+    (build / "vpet-active.json").write_text('{"directory":"vpet-dev"}', encoding="utf-8")
+    with patch.object(vpet_host, "__file__", str(tmp_path / "ui/vpet_host.py")):
+        assert vpet_host.host_executable() == latest / "TokenMeter.Pet.exe"
+        (build / "vpet-active.json").write_text('{"directory":"../outside"}', encoding="utf-8")
+        assert vpet_host.host_executable() == build / "vpet/TokenMeter.Pet.exe"
+
+
+def test_vpet_installed_launch_ignores_developer_build_pointer(tmp_path):
+    from ui import vpet_host
+
+    with (
+        patch.object(vpet_host.sys, "frozen", True, create=True),
+        patch.object(vpet_host.sys, "executable", str(tmp_path / "TokenMeter.exe")),
+    ):
+        assert vpet_host.host_executable() == tmp_path / "pet/TokenMeter.Pet.exe"
+
+
+def test_vpet_usage_protocol_preserves_quota_and_never_serializes_credentials():
+    data = TokenData(status="ok", last_success_at=datetime.now())
+    data.per_provider = [PerProviderData("codex", "Codex")]
+    data.quota_windows = [QuotaWindow("weekly", "周额度", 95)]
+    data.private_credential = "must-not-leave-main-process"
+    message = usage_message(data, False, "codex")
+    assert message["primary"] == "剩余 5%"
+    assert message["warning"] is True
+    assert "must-not-leave" not in json.dumps(message)
+    assert set(message) == {"type", "provider", "primary", "secondary", "status", "warning"}
+    data.quota_windows = []
+    data.status = "error"
+    message = usage_message(data, False, "codex")
+    assert message["primary"] == "--"
+    assert "¥" not in json.dumps(message, ensure_ascii=False)
+    assert "更新失败" in message["status"]
+
+
+def test_vpet_usage_protocol_handles_loading_money_and_invalid_quota():
+    data = TokenData(status="loading", balance_cny=20, today_cost_cny=1.25)
+    assert usage_message(data, True, "deepseek")["primary"] == "余额 --"
+    data.status, data.last_success_at = "ok", datetime.now()
+    message = usage_message(data, True, "deepseek")
+    assert message["primary"] == "余额 ¥20.00"
+    assert message["secondary"] == "今日使用 ¥1.25"
+    data.quota_windows = [QuotaWindow("weekly", "周额度", float("nan"))]
+    assert usage_message(data, False, "codex")["primary"] == "--"
+
+
+def test_vpet_pipe_buffers_frames_and_accepts_only_fixed_ui_actions():
+    host = VPetHost()
+    actions, ready = [], []
+    host.action_requested.connect(actions.append)
+    host.ready.connect(lambda: ready.append(True))
+    with patch.object(host, "_send") as send:
+        host.update_usage({"type": "usage", "primary": "65%"})
+        host.set_visible(False)
+        host._consume_output(b'{"event":"rea')
+        assert not host.active
+        host._consume_output(b'dy","animations":379}\n')
+        assert host.active and host.animations == 379
+        assert ready == [True]
+        assert send.call_args_list[0].args[0]["primary"] == "65%"
+        assert send.call_args_list[1].args[0] == {"type": "visibility", "visible": False}
+        host._consume_output(b'not-json\n[]\n{"event":"execute","command":"bad"}\n')
+        host._consume_output(b'{"event":"open_panel"}\n{"event":"quit"}\n')
+        assert actions == ["open_panel", "quit"]
+        host.stop()
+        host._consume_output(b'{"event":"open_settings"}\n')
+        assert actions == ["open_panel", "quit"]
+
+
+def test_vpet_pricing_outline_is_optional_and_only_for_deepseek_balance():
+    data = TokenData(status="ok", last_success_at=datetime.now(), balance_cny=12.8)
+    assert "pricing_peak" not in usage_message(data, False, "deepseek")
+    for peak in (True, False):
+        message = usage_message(data, False, "deepseek", peak)
+        assert message["pricing_peak"] is peak
+        assert message["primary"] == "余额 ¥12.80"
+        assert "pricing_peak" not in usage_message(data, False, "mimo", peak)
+    data.quota_windows = [QuotaWindow("weekly", "周额度", 35)]
+    assert "pricing_peak" not in usage_message(data, False, "deepseek", True)
+
+
+def test_vpet_theme_colors_follow_ball_and_update_without_refresh():
+    controller = configure_theme(APP, "dark")
+    original_light = controller.appearance("light")
+    original_dark = controller.appearance("dark")
+    with patch.object(FloatingWidget, "refresh") as refresh:
+        widget = FloatingWidget()
+        widget._data = TokenData(status="ok", quota_windows=[QuotaWindow("weekly", "周额度", 35)])
+        widget._vpet.active = True
+        refresh.reset_mock()
+        try:
+            with patch.object(widget._vpet, "update_usage") as send:
+                for mode, accent in (("light", "#158568"), ("dark", "#8A4FFF")):
+                    controller.set_mode(mode)
+                    send.reset_mock()
+                    controller.set_appearance(mode, accent, 100)
+                    assert send.called
+                    message = send.call_args.args[0]
+                    palette = message["theme"]
+                    theme = current_theme()
+                    assert palette["accent"] == accent
+                    assert palette["accent_hover"] == theme.accent_hover
+                    assert palette["water_top"] == FloatingUsageBall._water_top_color(theme).name()
+                    assert palette["water_deep"] == QColor(theme.accent).darker(138).name()
+                    assert palette["peak"] == ("#FFB000" if mode == "light" else theme.warning)
+                    assert palette["on_accent"] == theme.on_accent
+                    assert message["primary"] == "剩余 65%"
+                    assert all(QColor(value).isValid() for value in palette.values())
+                refresh.assert_not_called()
+        finally:
+            widget._vpet.active = False
+            widget._closed = True
+            widget.hide()
+            widget.deleteLater()
+            controller.set_appearance("light", *original_light)
+            controller.set_appearance("dark", *original_dark)
+            controller.set_mode("dark")
+
+
+def test_vpet_missing_executable_and_overflow_fail_once(tmp_path):
+    host = VPetHost()
+    errors = []
+    host.failed.connect(errors.append)
+    with patch("ui.vpet_host.host_executable", return_value=tmp_path / "absent.exe"):
+        host.start(tmp_path / "state")
+    assert len(errors) == 1
+    assert not host.active
+    host._consume_output(b"x" * 65537)
+    assert len(errors) == 1
+    assert not host._buffer
+
+
+def test_vpet_shutdown_requests_save_before_terminating_its_child():
+    host = VPetHost()
+    from PySide6.QtCore import QProcess
+    host.process = Mock()
+    host.process.state.return_value = QProcess.ProcessState.Running
+    host.process.waitForFinished.side_effect = [False, True]
+    host.stop()
+    assert json.loads(host.process.write.call_args.args[0]) == {"type": "shutdown"}
+    host.process.closeWriteChannel.assert_called_once()
+    host.process.kill.assert_called_once()
+    assert not host.active
+
+
+def test_vpet_requires_installed_pack_even_when_enabled_and_local_build_exists(tmp_path, monkeypatch):
+    installed = Mock(return_value=None)
+    monkeypatch.setattr("ui.qt_widget.pet_extension.installed_manifest", installed)
+    executable = tmp_path / "TokenMeter.Pet.exe"
+    executable.touch()
+    config_manager.save_config({"VPET_ENABLED": True})
+    with (
+        patch.object(FloatingWidget, "refresh"),
+        patch.object(VPetHost, "start") as start,
+        patch("ui.vpet_host.host_executable", return_value=executable),
+    ):
+        widget = FloatingWidget()
+        try:
+            start.assert_not_called()
+            assert widget.isVisible() and widget.ball.isVisible()
+            installed.return_value = {"version": "0.1.0"}
+            widget._sync_vpet()
+            start.assert_called_once()
+            widget._vpet.active = True
+            widget._on_vpet_ready()
+            installed.return_value = None
+            widget._sync_vpet()
+            assert not widget._vpet.active
+            assert widget.isVisible() and widget.ball.isVisible()
+        finally:
+            widget._closed = True
+            widget.hide()
+            widget.deleteLater()
+
+
+def test_vpet_widget_keeps_ball_until_ready_and_restores_it_on_failure(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.pet_extension.installed_manifest", lambda: {"version": "0.1.0"})
+    config_manager.save_config({"VPET_ENABLED": True})
+    with patch.object(FloatingWidget, "refresh"), patch.object(VPetHost, "start") as start:
+        widget = FloatingWidget()
+    try:
+        start.assert_called_once()
+        assert widget.isVisible()
+        widget._vpet._consume_output(b'{"event":"ready","animations":379}\n')
+        assert widget._vpet.active and not widget.isVisible()
+        widget._on_vpet_action("open_panel")
+        assert widget._expanded and widget.isVisible()
+        widget.collapse_panel()
+        assert not widget.isVisible()
+        widget._vpet._fail("test failure")
+        assert widget.isVisible() and not widget._vpet.active
+        assert widget.ball.isVisible()
+    finally:
+        widget._closed = True
+        widget.hide()
+        widget.deleteLater()
+
+
+def test_vpet_tray_visibility_and_disable_restore_existing_ui():
+    with patch.object(FloatingWidget, "refresh"):
+        widget = FloatingWidget()
+    try:
+        widget._vpet.active = True
+        widget._on_vpet_ready()
+        with patch.object(widget._vpet, "_send") as send:
+            widget.set_visible_from_tray()
+            assert not widget._vpet.visible
+            assert not widget.isVisible()
+            widget.set_visible_from_tray()
+            assert widget._vpet.visible
+            assert send.call_args.args[0] == {"type": "visibility", "visible": True}
+        widget._on_vpet_action("disable_pet")
+        assert not config_manager.get("VPET_ENABLED")
+        assert not widget._vpet.active and widget.isVisible()
+    finally:
+        widget._closed = True
+        widget.hide()
+        widget.deleteLater()
+
+
+def test_vpet_uninstall_stops_host_before_removing_pack_and_preserves_panel():
+    config_manager.save_config({"VPET_ENABLED": True})
+    with patch.object(FloatingWidget, "refresh"), patch.object(VPetHost, "start"):
+        widget = FloatingWidget()
+        widget._vpet.active = True
+        widget._on_vpet_ready()
+        widget.open_settings()
+    window = widget._settings_window
+    panel = widget.panel
+    try:
+        def remove(operation):
+            assert operation == "uninstall"
+            assert not widget._vpet.active
+            assert not config_manager.get("VPET_ENABLED")
+            assert widget.panel is panel
+        with (
+            patch("ui.qt_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),
+            patch.object(window, "_start_pet_task", side_effect=remove) as uninstall,
+            patch.object(FloatingWidget, "refresh"),
+        ):
+            window._uninstall_pet()
+        uninstall.assert_called_once()
+        widget.collapse_panel()
+        assert widget.isVisible() and widget.ball.isVisible()
+    finally:
+        widget._closed = True
+        widget.hide()
+        widget.deleteLater()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_pet_update_pauses_only_host_and_restores_enabled_preference(failed, monkeypatch):
+    from ui.qt_settings import _PetExtensionWorker
+    from updater.client import UpdateError
+
+    monkeypatch.setattr("ui.qt_widget.pet_extension.installed_manifest", lambda: {"version": "0.1.0"})
+    config_manager.save_config({"VPET_ENABLED": True})
+    with patch.object(FloatingWidget, "refresh"), patch.object(VPetHost, "start"):
+        widget = FloatingWidget()
+        widget.open_settings()
+    window = widget._settings_window
+    panel = widget.panel
+    original = config_manager.all_config()
+    try:
+        with (patch.object(_PetExtensionWorker, "start"),
+              patch.object(widget._vpet, "stop") as stop,
+              patch.object(widget._vpet, "start") as start):
+            window._start_pet_task("update")
+            assert widget._vpet_updating
+            stop.assert_called_once()
+            widget._sync_vpet()
+            start.assert_not_called()
+            assert widget.panel is panel and widget.isVisible()
+            assert config_manager.all_config() == original
+            worker = window._pet_worker
+            worker.error = UpdateError("offline") if failed else None
+            window._pet_task_finished()
+            assert not widget._vpet_updating
+            start.assert_called_once()
+            assert config_manager.all_config() == original
+    finally:
+        widget._closed = True
+        widget.hide()
+        widget.deleteLater()
+
+
 def test_window_stays_on_top_and_compact_ball_does_not_take_focus():
     with patch("ui.qt_widget.TokenData.fetch", return_value=sample_data()):
         widget = FloatingWidget()
@@ -3998,7 +4292,7 @@ def test_settings_custom_colors_save_failure_is_visible(custom_color_settings):
     assert not config_manager.CONFIG_PATH.exists()
 
 
-def test_settings_groups_configuration_into_six_scrolling_pages():
+def test_settings_groups_configuration_into_scrolling_pages_with_separate_pet_page():
     with (
         patch("ui.qt_settings.config_manager.load_config", return_value=config_manager.all_config()),
         patch("ui.qt_settings.config_manager.all_config", return_value=config_manager.all_config()),
@@ -4006,18 +4300,21 @@ def test_settings_groups_configuration_into_six_scrolling_pages():
         window = SettingsWindow()
 
     assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == [
-        "账户连接", "外观", "悬浮与启动", "采集与统计", "数据存储", "更新与关于",
+        "账户连接", "外观", "悬浮与启动", "桌宠", "采集与统计", "数据存储", "更新与关于",
     ]
     assert window.tabs.widget(0) is window.scroll_area
     for index, control in (
         (0, window.provider_combo),
         (1, window.theme_combo),
         (2, window.panel_auto_collapse_check),
-        (3, window.refresh_seconds),
-        (3, window.deepseek_peak_pricing_card),
-        (4, window.minute_usage_retention_days),
-        (4, window.data_dir_edit),
-        (5, window.update_card),
+        (3, window.vpet_check),
+        (3, window.pet_version_label),
+        (3, window.pet_install_button),
+        (4, window.refresh_seconds),
+        (4, window.deepseek_peak_pricing_card),
+        (5, window.minute_usage_retention_days),
+        (5, window.data_dir_edit),
+        (6, window.update_card),
     ):
         assert isinstance(window.tabs.widget(index), QScrollArea)
         assert window.tabs.widget(index).isAncestorOf(control)
@@ -4084,6 +4381,86 @@ def test_settings_switch_autosaves_and_return_flushes_last_edit(autosave_setting
     refreshed.assert_called_once()
     assert values["EDGE_HIDE_ENABLED"] is False
     assert not window._save_timer.isActive()
+
+
+def test_settings_vpet_switch_persists_without_changing_ball_preferences(autosave_settings):
+    window, values, saved, refreshed = autosave_settings
+    with patch("ui.qt_settings.pet_extension.installed_manifest", return_value={"version": "0.1.0"}):
+        window._refresh_pet_controls()
+    window.vpet_check.click()
+    window.flush_pending_saves()
+    assert values["VPET_ENABLED"] is True
+    assert values["EDGE_HIDE_ENABLED"] is True
+    assert values["WIDGET_COMPACT_SIZE"] == 88
+    saved.assert_called_once()
+    refreshed.assert_called_once()
+
+
+@pytest.mark.parametrize("width", [560, 820])
+@pytest.mark.parametrize("state", ["idle", "update", "download"])
+def test_pet_actions_stay_in_one_row_with_visible_version(width, state, tmp_path):
+    with (
+        patch("ui.qt_settings.pet_extension.installed_manifest", return_value={"version": "0.1.0"}),
+        patch("ui.qt_settings.pet_extension.removable_directories", return_value=[tmp_path]),
+    ):
+        parent = QWidget()
+        parent.resize(width, 550)
+        window = SettingsWindow(parent, embedded=True)
+        try:
+            if state == "update":
+                window._pet_release = Mock(version="0.2.0")
+            elif state == "download":
+                window._pet_worker = Mock(operation="install")
+            window._refresh_pet_controls()
+            window.tabs.setCurrentIndex(3)
+            window.resize(width, 550)
+            window.show()
+            parent.show()
+            APP.processEvents()
+            assert window.width() == width
+            first = window.pet_update_button if state == "update" else window.pet_install_button
+            last = window.pet_cancel_button if state == "download" else window.pet_check_button
+            buttons = [first, window.pet_uninstall_button, last]
+            assert all(button.isVisible() for button in buttons)
+            positions = [button.mapTo(window, QPoint(0, 0)) for button in buttons]
+            assert len({point.y() for point in positions}) == 1
+            for left, right, button in zip(positions, positions[1:], buttons):
+                assert left.x() + button.width() < right.x()
+            assert positions[-1].x() + last.width() <= window.width()
+            assert window.pet_version_label.isVisible()
+            assert window.pet_version_label.text() == "桌宠版本：v0.1.0"
+            assert window.pet_source_label.isVisible()
+            assert window.rect().contains(window.pet_source_label.mapTo(window, window.pet_source_label.rect().bottomRight()))
+            assert window.pet_install_button.isHidden() == (state == "update")
+            assert window.pet_check_button.isHidden() == (state == "download")
+        finally:
+            window._pet_worker = None
+            window.close()
+            parent.close()
+            parent.deleteLater()
+
+
+@pytest.mark.parametrize(("manifest", "expected"), [
+    (None, "桌宠版本：未安装"),
+    ({"version": "0.1.0"}, "桌宠版本：v0.1.0"),
+    ({"app_version": "1.13.2"}, "桌宠版本：旧版（无版本号）"),
+])
+def test_pet_version_always_describes_installation_state(autosave_settings, manifest, expected):
+    window, _values, saved, _refreshed = autosave_settings
+    if manifest is None:
+        window._pet_release = Mock(version="0.2.0")
+    with (
+        patch("ui.qt_settings.pet_extension.installed_manifest", return_value=manifest),
+        patch("ui.qt_settings.pet_extension.removable_directories", return_value=[]),
+    ):
+        window._refresh_pet_controls()
+    window.tabs.setCurrentIndex(3)
+    APP.processEvents()
+    assert window.pet_version_label.isVisible()
+    assert window.pet_version_label.text() == expected
+    assert window.vpet_check.isEnabled() == (manifest is not None)
+    assert not window.pet_install_button.isHidden()
+    saved.assert_not_called()
 
 
 def test_settings_autosave_reports_failure_without_success_callback(autosave_settings):

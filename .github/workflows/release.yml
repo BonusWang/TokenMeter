@@ -28,7 +28,7 @@ jobs:
           python -m pip install -r requirements-dev.txt -r requirements-build.txt
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q --durations=20
 
       - name: Audit Python dependencies
         run: python -m pip_audit --local --progress-spinner off
@@ -55,21 +55,17 @@ jobs:
             "/NOICONS",
             "/DIR=`"$installDir`""
           )
-          $install = Start-Process $setup -ArgumentList $arguments -Wait -PassThru
+          $install = Start-Process $setup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
           New-Item -ItemType Directory -Force (Join-Path $installDir "data") | Out-Null
           Set-Content (Join-Path $installDir "data/preserve-marker.txt") "keep"
-          $overwrite = Start-Process $setup -ArgumentList $arguments -Wait -PassThru
+          $overwrite = Start-Process $setup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
           if ($overwrite.ExitCode -ne 0) { throw "Overwrite install exited with $($overwrite.ExitCode)" }
           if (-not (Test-Path (Join-Path $installDir "data/preserve-marker.txt"))) {
             throw "Overwrite install removed user data"
           }
-          $app = Start-Process (Join-Path $installDir "TokenMeter.exe") -PassThru
-          Start-Sleep -Seconds 5
-          if ($app.HasExited -and $app.ExitCode -ne 0) {
-            throw "Installed TokenMeter exited with $($app.ExitCode)"
-          }
-          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          # 安装后的真实 Qt 自检必须成功退出，避免把仍停留在错误弹窗的进程误判为启动成功。
+          python -c "import sys; from pathlib import Path; from scripts.build_release import _smoke_test_main; _smoke_test_main(Path(sys.argv[1]))" (Join-Path $installDir "TokenMeter.exe")
 
       - name: Generate SHA256SUMS
         run: python scripts/build_release.py --stage checksums --require-installer

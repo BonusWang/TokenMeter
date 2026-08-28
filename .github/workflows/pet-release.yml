@@ -1,0 +1,66 @@
+name: pet-release
+
+on:
+  push:
+    tags:
+      - "pet-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-pet:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Validate pet tag and release notes
+        id: metadata
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $manifest = Get-Content -LiteralPath "pet_host/extension.json" -Raw | ConvertFrom-Json
+          if ($env:RELEASE_TAG -cne "pet-v$($manifest.version)") {
+            throw "Pet tag must match pet_host/extension.json"
+          }
+          $notes = Join-Path "release-notes" "$($env:RELEASE_TAG).md"
+          if (-not (Test-Path -LiteralPath $notes)) { throw "Pet release notes are required" }
+          $body = Get-Content -LiteralPath $notes -Raw
+          if ($body -notmatch "更新类型" -or $body -notmatch "验证") {
+            throw "Pet release notes must include change type and verification"
+          }
+          "prerelease=$($manifest.version.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Test pet packaging and update lifecycle
+        run: python -m pytest tests/test_pet_extension.py tests/test_packaging.py tests/test_update.py -q
+
+      - name: Build independent pet extension
+        run: python scripts/build_release.py --stage pet
+
+      # 扩展不占用主程序的 latest，也不构建或上传面板安装器。
+      - name: Publish pet release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TokenMeter Pet ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ steps.metadata.outputs.prerelease }}
+          make_latest: false
+          body_path: release-notes/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
+          files: |
+            dist-pet/TokenMeter-Pet-v*-x64.zip
+            dist-pet/extension.json
+            dist-pet/SHA256SUMS.txt

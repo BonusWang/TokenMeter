@@ -33,6 +33,8 @@ def widget_stub():
     widget._provider_last_started = {}
     widget._provider_task_started = {}
     widget._closed = False
+    widget._vpet = Mock(active=False)
+    widget._vpet_updating = False
     widget._data = TokenData()
     widget._expanded = False
     widget._edge_snapped = False
@@ -67,10 +69,32 @@ def pricing_widget_stub():
     widget.panel = Mock()
     widget.ball = Mock()
     widget.tray = Mock()
+    widget._vpet = Mock(active=True)
+    widget._data = TokenData(status="ok", balance_cny=12.8)
+    widget._refreshing = False
     return widget
 
 
 class RefreshTests(unittest.TestCase):
+    def test_pet_pricing_outline_updates_at_boundary_and_clears_when_disabled(self):
+        widget = pricing_widget_stub()
+        values = {"DEEPSEEK_PEAK_PRICING_ENABLED": True, "ACTIVE_PROVIDER": "deepseek"}
+        boundary = datetime(2026, 7, 15, 12, 0, tzinfo=BEIJING_TIMEZONE)
+        with (
+            patch("ui.qt_widget.config_manager.get", side_effect=lambda key, default=None: values.get(key, default)),
+            patch("ui.qt_widget.config_manager.all_config", return_value={}),
+            patch("ui.qt_widget.pricing_state", side_effect=[
+                PricingState(False, "平时", "", boundary), PricingState(True, "峰时", "", boundary)
+            ]),
+        ):
+            widget._sync_pricing_state(notify_transition=False)
+            self.assertIs(widget._vpet.update_usage.call_args.args[0]["pricing_peak"], False)
+            widget._on_pricing_boundary()
+            self.assertIs(widget._vpet.update_usage.call_args.args[0]["pricing_peak"], True)
+            values["DEEPSEEK_PEAK_PRICING_ENABLED"] = False
+            widget._sync_pricing_state(notify_transition=False)
+            self.assertNotIn("pricing_peak", widget._vpet.update_usage.call_args.args[0])
+
     def test_peak_pricing_notifies_only_on_running_offpeak_to_peak_transition(self):
         widget = pricing_widget_stub()
         offpeak = PricingState(

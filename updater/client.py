@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -24,6 +25,10 @@ from core.identity import (
     GITHUB_RELEASES_API_URL,
     GITHUB_REPOSITORY,
     MAIN_EXECUTABLE_NAME,
+    PET_MANIFEST_ASSET_NAME,
+    PET_PROTOCOL,
+    PET_RELEASE_ASSET_TEMPLATE,
+    PET_RELEASE_TAG_PREFIX,
     SETUP_RELEASE_ASSET_TEMPLATE,
     SHA256_RELEASE_ASSET_NAME,
 )
@@ -163,6 +168,36 @@ class CheckResult:
     update_available: bool
     message: str
     cached: bool = False
+
+
+@dataclass(frozen=True)
+class PetReleaseInfo:
+    version: str
+    manifest: dict
+    asset: ReleaseAsset
+    sha256: str
+
+
+def validate_pet_manifest(manifest: object, app_version: str = APP_VERSION) -> dict:
+    if not isinstance(manifest, dict):
+        raise ValueError("桌宠扩展版本清单无效")
+    if (type(manifest.get("protocol")) is not int
+            or manifest["protocol"] != PET_PROTOCOL or manifest.get("platform") != "win-x64"):
+        raise ValueError("桌宠扩展包与当前版本不兼容")
+    version = manifest.get("version")
+    minimum = manifest.get("min_app_version")
+    maximum = manifest.get("max_app_version")
+    if not isinstance(version, str) or not isinstance(minimum, str):
+        raise ValueError("桌宠扩展版本清单无效")
+    if normalize_version(version) != version:
+        raise ValueError("桌宠扩展版本号无效")
+    # 扩展有独立版本；主程序只需处于兼容区间，max_app_version 为不包含的上界。
+    if compare_versions(app_version, minimum) < 0:
+        raise ValueError("桌宠扩展包与当前版本不兼容")
+    if maximum is not None and (not isinstance(maximum, str)
+                               or compare_versions(app_version, maximum) >= 0):
+        raise ValueError("桌宠扩展包与当前版本不兼容")
+    return dict(manifest)
 
 
 @dataclass(frozen=True)
@@ -393,22 +428,137 @@ class GitHubReleaseClient:
             cache_dir=cache_dir,
         )
 
+    def download_pet_pack(
+        self,
+        directory: Path,
+        *,
+        release: PetReleaseInfo | None = None,
+        progress: Callable[[dict[str, object]], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> Path:
+        release = release or self.latest_pet_release(cancel_requested=cancel_requested)
+        if cancel_requested and cancel_requested():
+            raise DownloadCancelled("已取消下载")
+        destination = directory / release.asset.name
+        self._download_asset(
+            release.asset, destination, expected_sha=release.sha256,
+            bytes_before=0, bytes_total=release.asset.size,
+            progress=progress, cancel_requested=cancel_requested,
+        )
+        return destination
+
+    def latest_pet_release(
+        self, *, cancel_requested: Callable[[], bool] | None = None,
+    ) -> PetReleaseInfo:
+        candidates = []
+        page = 1
+        # 体验版需要能安装同批次的预发布桌宠；正式版继续排除预发布包，避免误升级。
+        allow_prerelease = bool(SemVer.parse(APP_VERSION).prerelease)
+        # 主程序与扩展共用仓库；分页避免主程序发版较多后找不到仍兼容的桌宠版本。
+        while True:
+            if cancel_requested and cancel_requested():
+                raise DownloadCancelled("已取消下载")
+            payload = self._request_json(f"{GITHUB_RELEASES_API_URL}?per_page=100&page={page}")
+            if not isinstance(payload, list):
+                raise UpdateError("GitHub Releases 返回格式不正确")
+            for item in payload:
+                if (not isinstance(item, dict) or item.get("draft")
+                        or (item.get("prerelease") and not allow_prerelease)):
+                    continue
+                tag = str(item.get("tag_name") or "")
+                if not tag.startswith(PET_RELEASE_TAG_PREFIX):
+                    continue
+                try:
+                    version = SemVer.parse(tag[len(PET_RELEASE_TAG_PREFIX):])
+                except ValueError:
+                    continue
+                if ((allow_prerelease or not version.prerelease)
+                        and tag == PET_RELEASE_TAG_PREFIX + version.normalized()):
+                    candidates.append((version, item))
+            if len(payload) < 100:
+                break
+            page += 1
+        for version, item in sorted(candidates, key=lambda entry: entry[0], reverse=True):
+            if cancel_requested and cancel_requested():
+                raise DownloadCancelled("已取消下载")
+            assets = item.get("assets")
+            if not isinstance(assets, list):
+                continue
+            # 只接受这个扩展 Tag 下的附件，不能拿其他版本的包冒充更新。
+            prefix = (f"https://github.com/{GITHUB_REPOSITORY}/releases/download/"
+                      f"{PET_RELEASE_TAG_PREFIX}{version.normalized()}/")
+            by_name = {asset.name: asset for raw in assets
+                       if (asset := _asset_from_payload(raw))
+                       and asset.download_url == prefix + asset.name}
+            name = PET_RELEASE_ASSET_TEMPLATE.format(version=version.normalized())
+            if not {name, PET_MANIFEST_ASSET_NAME, SHA256_RELEASE_ASSET_NAME} <= by_name.keys():
+                continue
+            checksums = self._load_checksums(by_name[SHA256_RELEASE_ASSET_NAME])
+            if not all(checksums.get(key.lower()) for key in (name, PET_MANIFEST_ASSET_NAME)):
+                raise UpdateError("SHA256SUMS.txt 缺少桌宠扩展包或版本清单的校验值")
+            manifest = self._load_pet_manifest(
+                by_name[PET_MANIFEST_ASSET_NAME], checksums[PET_MANIFEST_ASSET_NAME.lower()],
+                cancel_requested,
+            )
+            try:
+                manifest = validate_pet_manifest(manifest)
+            except ValueError:
+                continue
+            if manifest["version"] != version.normalized():
+                raise UpdateError("桌宠版本清单与发布标签不一致")
+            return PetReleaseInfo(version.normalized(), manifest, by_name[name], checksums[name.lower()])
+        raise UpdateError("尚未发布与当前主程序兼容的桌宠扩展包")
+
+    def _load_pet_manifest(
+        self, asset: ReleaseAsset, expected_sha: str, cancel_requested: Callable[[], bool] | None,
+    ) -> object:
+        response, _ = self._open_download_stream(asset.download_url)
+        content = bytearray()
+        try:
+            for chunk in response.iter_content(chunk_size=8192):
+                if cancel_requested and cancel_requested():
+                    raise DownloadCancelled("已取消下载")
+                content.extend(chunk)
+                # 检查更新只需很小的清单，不能先下载整个运行时或接受无限增长的响应。
+                if len(content) > 65536:
+                    raise UpdateError("桌宠版本清单超过大小限制")
+        finally:
+            response.close()
+        if hashlib.sha256(content).hexdigest() != expected_sha.lower():
+            raise UpdateError("桌宠版本清单的 SHA256 校验失败")
+        try:
+            return json.loads(content)
+        except ValueError as exc:
+            raise UpdateError("桌宠扩展版本清单无效") from exc
+
     def _load_latest_stable(self) -> ReleaseInfo:
         payload = self._request_json(GITHUB_LATEST_RELEASE_API_URL)
+        # 即使有人误把桌宠 Release 标成 latest，也不能让原有主程序更新失效。
+        if isinstance(payload, dict) and str(payload.get("tag_name", "")).startswith(PET_RELEASE_TAG_PREFIX):
+            return self._load_latest_from_list(stable_only=True)
         return _release_from_payload(payload)
 
-    def _load_latest_from_list(self) -> ReleaseInfo:
-        payload = self._request_json(f"{GITHUB_RELEASES_API_URL}?per_page=20")
-        if not isinstance(payload, list):
-            raise UpdateError("GitHub Releases 返回格式不正确")
+    def _load_latest_from_list(self, *, stable_only: bool = False) -> ReleaseInfo:
         candidates: list[ReleaseInfo] = []
-        for item in payload:
-            if not isinstance(item, dict) or item.get("draft"):
-                continue
-            try:
-                candidates.append(_release_from_payload(item))
-            except UpdateError:
-                continue
+        page = 1
+        while not candidates:
+            suffix = "" if page == 1 else f"&page={page}"
+            payload = self._request_json(f"{GITHUB_RELEASES_API_URL}?per_page=20{suffix}")
+            if not isinstance(payload, list):
+                raise UpdateError("GitHub Releases 返回格式不正确")
+            for item in payload:
+                if (not isinstance(item, dict) or item.get("draft")
+                        or (stable_only and item.get("prerelease"))):
+                    continue
+                try:
+                    release = _release_from_payload(item)
+                    if not stable_only or not release.semver.prerelease:
+                        candidates.append(release)
+                except UpdateError:
+                    continue
+            if len(payload) < 20:
+                break
+            page += 1
         if not candidates:
             raise UpdateError("没有找到可用的 Release 附件")
         return max(candidates, key=lambda item: item.semver)
@@ -431,8 +581,10 @@ class GitHubReleaseClient:
         except ValueError as exc:
             raise UpdateError("GitHub API 返回了无法解析的数据") from exc
 
-    def _load_checksums(self, release: ReleaseInfo) -> dict[str, str]:
-        response, _ = self._open_download_stream(release.checksum_asset.download_url)
+    def _load_checksums(self, release: ReleaseInfo | ReleaseAsset) -> dict[str, str]:
+        # 主程序更新与可选扩展共用官方来源检查、重定向限制和 SHA256 校验。
+        asset = release.checksum_asset if isinstance(release, ReleaseInfo) else release
+        response, _ = self._open_download_stream(asset.download_url)
         try:
             content = response.text
         finally:
@@ -674,6 +826,8 @@ def _release_from_payload(payload: object) -> ReleaseInfo:
         raise UpdateError("GitHub Release 返回格式不正确")
     if payload.get("draft"):
         raise UpdateError("草稿 Release 不能用于在线更新")
+    if str(payload.get("tag_name", "")).startswith(PET_RELEASE_TAG_PREFIX):
+        raise UpdateError("桌宠扩展 Release 不能用于主程序更新")
     version = _release_version_from_payload(payload)
     semver = SemVer.parse(version)
     assets = payload.get("assets")

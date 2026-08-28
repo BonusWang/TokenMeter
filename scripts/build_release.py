@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
-import time
+import tempfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +20,11 @@ if str(ROOT) not in sys.path:
 from core.identity import (
     APP_VERSION,
     MAIN_EXECUTABLE_NAME,
+    PET_RELEASE_ASSET_TEMPLATE,
     UPDATER_EXECUTABLE_NAME,
 )
+from core.pet_extension import PACK_MANIFEST, validate_payload
+from updater.client import validate_pet_manifest
 
 DIST_DIR = ROOT / "dist"
 MAIN_SPEC = ROOT / "packaging" / "pyinstaller" / "TokenMeter.spec"
@@ -29,12 +34,26 @@ UPDATER_DIST_DIR = DIST_DIR / "TokenMeterUpdater"
 INSTALLER_SCRIPT = ROOT / "packaging" / "installer" / "TokenMeter.iss"
 INSTALLER_OUTPUT_DIR = ROOT / "dist-installer"
 INSTALLER_PATH = INSTALLER_OUTPUT_DIR / f"TokenMeter-Setup-v{APP_VERSION}-x64.exe"
+# 桌宠版本只来自自己的清单，普通主程序发版不会重新编号或构建扩展。
+PET_MANIFEST = json.loads((ROOT / "pet_host" / PACK_MANIFEST).read_text(encoding="utf-8"))
+PET_PACK_PATH = ROOT / "dist-pet" / PET_RELEASE_ASSET_TEMPLATE.format(version=PET_MANIFEST["version"])
 SHA_FILE = INSTALLER_OUTPUT_DIR / "SHA256SUMS.txt"
 LEGACY_SHA_FILE = DIST_DIR / "SHA256SUMS.txt"
 
 
-def _run(command: list[str]) -> None:
-    subprocess.run(command, cwd=ROOT, check=True)
+def _run(command: list[str], *, env: dict[str, str] | None = None) -> None:
+    subprocess.run(command, cwd=ROOT, check=True, env=env)
+
+
+def _isolated_dll_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    if os.name == "nt":
+        # 构建机 PATH 中的 Poppler/Java 等会提供同名但不兼容的 DLL；只给打包子进程保留 Python 和系统路径。
+        system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
+        env["PATH"] = os.pathsep.join(map(str, (
+            Path(sys.executable).parent, Path(sys.base_prefix), system_root / "System32", system_root,
+        )))
+    return env
 
 
 def _sha256(path: Path) -> str:
@@ -51,34 +70,28 @@ def _write_sha256_file(paths: list[Path]) -> None:
 
 
 def _smoke_test_main(executable: Path) -> None:
-    process = subprocess.Popen([str(executable)], cwd=executable.parent)
-    try:
-        time.sleep(5)
-        if process.poll() not in (None, 0):
-            raise RuntimeError(f"{executable.name} exited early with code {process.poll()}")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=10)
-        smoke_data = executable.parent / "data"
-        if smoke_data.exists():
-            # The packaged app correctly creates adjacent data on first launch;
-            # smoke-test state must never become installer input.
-            shutil.rmtree(smoke_data)
+    # 验证真实 Qt 导入与渲染后的退出码；错误弹窗仍保持进程存活，不能再以“运行了5秒”判定成功。
+    with tempfile.TemporaryDirectory(prefix="tokenmeter-smoke-") as state_dir:
+        env = _isolated_dll_environment()
+        env.update(APPDATA=state_dir, LOCALAPPDATA=state_dir)
+        subprocess.run([str(executable), "--smoke-test"], cwd=executable.parent,
+                       check=True, timeout=60, env=env)
 
 
 def _smoke_test_updater(executable: Path) -> None:
     subprocess.run([str(executable), "--help"], cwd=executable.parent, check=True)
 
 
-def build_onedir() -> None:
+def build_onedir(*, with_vpet: bool = False) -> None:
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     INSTALLER_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     INSTALLER_PATH.unlink(missing_ok=True)
     SHA_FILE.unlink(missing_ok=True)
     LEGACY_SHA_FILE.unlink(missing_ok=True)
-    _run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", str(MAIN_SPEC)])
-    _run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", str(UPDATER_SPEC)])
+    _run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", str(MAIN_SPEC)],
+         env=_isolated_dll_environment())
+    _run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", str(UPDATER_SPEC)],
+         env=_isolated_dll_environment())
 
     # Reuse the identity constants so build outputs and release asset names stay
     # aligned after repository/branding adjustments.
@@ -94,6 +107,40 @@ def build_onedir() -> None:
             )
     if not main_exe.exists() or not updater_exe.exists():
         raise FileNotFoundError("PyInstaller did not produce both executables")
+    if with_vpet:
+        # 保留旧命令参数，但桌宠始终产出独立附件，不再混入主安装目录。
+        build_pet_pack()
+
+
+def package_pet_payload(source: Path) -> Path:
+    validate_payload(source)
+    manifest = validate_pet_manifest(PET_MANIFEST)
+    if not (source / "coreclr.dll").is_file():
+        raise ValueError("Release pet packs must include the .NET runtime")
+    PET_PACK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = PET_PACK_PATH.with_suffix(".zip.tmp")
+    try:
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as pack:
+            for path in sorted(source.rglob("*")):
+                if path.is_file() and path.name != PACK_MANIFEST:
+                    pack.write(path, path.relative_to(source).as_posix())
+            pack.writestr(PACK_MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2))
+        temporary.replace(PET_PACK_PATH)
+    finally:
+        temporary.unlink(missing_ok=True)
+    manifest_path = PET_PACK_PATH.parent / PACK_MANIFEST
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 桌宠发布不依赖主安装器，清单也参与校验以支持小流量检查兼容版本。
+    (PET_PACK_PATH.parent / "SHA256SUMS.txt").write_text(
+        "".join(f"{_sha256(path)} *{path.name}\n" for path in (PET_PACK_PATH, manifest_path)),
+        encoding="utf-8",
+    )
+    return PET_PACK_PATH
+
+
+def build_pet_pack() -> Path:
+    _run([sys.executable, str(ROOT / "scripts" / "build_vpet.py")])
+    return package_pet_payload(ROOT / "build" / "vpet")
 
 def _inno_compiler() -> str | None:
     compiler = shutil.which("iscc") or shutil.which("ISCC.exe")
@@ -131,12 +178,13 @@ def write_release_checksums(*, required: bool) -> bool:
             raise FileNotFoundError("Installer missing; cannot generate release checksums")
         print("Installer missing; SHA256SUMS.txt generation skipped.")
         return False
-    _write_sha256_file([INSTALLER_PATH])
+    paths = [INSTALLER_PATH]
+    _write_sha256_file(paths)
     return True
 
 
-def build_release(*, skip_smoke_test: bool) -> None:
-    build_onedir()
+def build_release(*, skip_smoke_test: bool, with_vpet: bool = False) -> None:
+    build_onedir(with_vpet=with_vpet)
     installer_built = build_installer(required=False)
     if not skip_smoke_test:
         smoke_test()
@@ -147,19 +195,22 @@ def build_release(*, skip_smoke_test: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build TokenMeter release assets")
     parser.add_argument("--skip-smoke-test", action="store_true")
+    parser.add_argument("--with-vpet", action="store_true", help="Also build a separate optional VPet ZIP (never bundled in the installer)")
     parser.add_argument(
         "--stage",
-        choices=("all", "onedir", "installer", "smoke", "checksums"),
+        choices=("all", "onedir", "pet", "installer", "smoke", "checksums"),
         default="all",
     )
     parser.add_argument("--require-installer", action="store_true")
     args = parser.parse_args(argv)
     if args.stage == "all":
-        build_release(skip_smoke_test=args.skip_smoke_test)
+        build_release(skip_smoke_test=args.skip_smoke_test, with_vpet=args.with_vpet)
     elif args.stage == "onedir":
-        build_onedir()
+        build_onedir(with_vpet=args.with_vpet)
     elif args.stage == "installer":
         build_installer(required=args.require_installer)
+    elif args.stage == "pet":
+        build_pet_pack()
     elif args.stage == "smoke":
         smoke_test()
     else:

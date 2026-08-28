@@ -87,6 +87,37 @@ def test_release_without_setup_installer_is_rejected():
         )
 
 
+def test_pet_release_never_becomes_a_main_program_update():
+    from updater.client import _release_from_payload
+
+    with pytest.raises(UpdateError, match="桌宠"):
+        _release_from_payload({"tag_name": "pet-v0.1.0", "name": "99.0.0", "assets": []})
+
+
+def test_main_update_survives_pet_releases_marked_latest_and_full_first_page():
+    from updater.client import GitHubReleaseClient
+
+    release = _setup_release("2.0.0")
+    stable = {"tag_name": "v2.0.0", "assets": [
+        {"name": asset.name, "browser_download_url": asset.download_url, "size": asset.size}
+        for asset in (release.setup_asset, release.checksum_asset)
+    ]}
+    pet = {"tag_name": "pet-v0.1.0", "name": "99.0.0", "assets": []}
+    client = GitHubReleaseClient()
+    with patch.object(client, "_request_json", side_effect=[pet, [pet] * 20, [stable]]) as metadata:
+        assert client._load_latest_stable().version == "2.0.0"
+    assert metadata.call_args.args[0].endswith("page=2")
+
+
+def test_main_stable_fallback_excludes_prerelease_versions():
+    client = GitHubReleaseClient()
+    with patch.object(client, "_request_json", return_value=[
+        {"tag_name": "v99.0.0", "prerelease": True, "assets": []}
+    ]):
+        with pytest.raises(UpdateError):
+            client._load_latest_from_list(stable_only=True)
+
+
 def test_download_bundle_downloads_only_verified_setup_to_update_cache(tmp_path):
     release = _setup_release()
     client = GitHubReleaseClient()

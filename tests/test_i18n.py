@@ -250,6 +250,30 @@ def test_setting_language_preserves_drafts_and_does_not_save_other_settings(isol
     window.close()
 
 
+def test_pet_page_and_version_state_follow_language(isolated_language):
+    with (
+        patch("ui.qt_settings.pet_extension.installed_manifest", return_value=None) as manifest,
+        patch("ui.qt_settings.pet_extension.removable_directories", return_value=[]),
+    ):
+        window = SettingsWindow()
+        try:
+            isolated_language.set_language("en")
+            assert window.tabs.tabText(3) == "Pet"
+            assert window.pet_version_label.text() == "Pet version: Not installed"
+            assert window.pet_source_label.text().startswith("Pet source code: ")
+            assert 'href="https://github.com/LorisYounger/VPet"' in window.pet_source_label.text()
+            assert window.pet_source_label.openExternalLinks()
+            manifest.return_value = {"version": "0.1.0"}
+            window._refresh_pet_controls()
+            assert window.pet_version_label.text() == "Pet version: v0.1.0"
+            isolated_language.set_language("zh-cn")
+            assert window.tabs.tabText(3) == "桌宠"
+            assert window.pet_version_label.text() == "桌宠版本：v0.1.0"
+            assert window.pet_source_label.text().startswith("桌宠源码来源：")
+        finally:
+            window.close()
+
+
 def test_language_switch_failure_restores_selector(isolated_language):
     window = SettingsWindow()
     with patch.object(config_manager, "save_ui_language", side_effect=OSError("failure")):

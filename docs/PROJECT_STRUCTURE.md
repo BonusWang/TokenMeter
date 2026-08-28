@@ -10,6 +10,8 @@ TokenMeter/
 ├── data/                # 数据目录、聚合和 SQLite 历史记录
 ├── updater/             # 更新检查、安装和独立更新器入口
 ├── ui/                  # PySide6 用户界面
+├── pet_host/            # VPet 宿主、独立 extension.json 版本清单与开发说明
+├── third_party/VPet/    # 随仓库维护的 VPet 核心源码、来源和授权
 ├── packaging/           # PyInstaller、Inno Setup 和 Windows 版本资源
 ├── scripts/             # 构建与发布自动化
 ├── assets/              # 图标等运行时静态资源
@@ -33,4 +35,8 @@ python -m pytest -q
 python -m ruff check .
 python -m pyright
 python scripts/build_release.py
+python scripts/build_release.py --stage pet
 ```
+
+主程序 `v*` Tag 使用 `.github/workflows/release.yml`；可选桌宠 `pet-v*` Tag 使用
+`.github/workflows/pet-release.yml`。桌宠独立产物位于 `dist-pet/`，不进入主安装包。

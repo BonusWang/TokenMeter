@@ -89,7 +89,45 @@ class App:
             config_manager.logger().info("%s stopped", APP_DISPLAY_NAME)
 
 
+def _smoke_test() -> int:
+    """Validate the packaged Qt runtime and real UI without credentials or network requests."""
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        from ui.qt_ball import FloatingUsageBall
+        from ui.qt_panel import MainPanel
+        from ui.qt_theme import configure_theme
+
+        app = QApplication.instance() or QApplication([])
+        # Qt 的 instance() 也可能返回非图形应用；自检必须在真正的 QApplication 上执行。
+        if not isinstance(app, QApplication):
+            return 1
+        configure_theme(app, "dark")
+        ball = FloatingUsageBall(88)
+        panel = MainPanel()
+        try:
+            ball.show()
+            panel.resize(820, 564)
+            panel.show()
+            app.processEvents()
+            return 0 if not ball.grab().isNull() and not panel.grab().isNull() else 1
+        finally:
+            panel.close()
+            ball.close()
+            app.processEvents()
+    except Exception:
+        # 无控制台打包程序的 stderr 可能为空；必须以非零状态退出，不能停留在错误弹窗里被误判为成功。
+        if sys.stderr is not None:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
 def main() -> int:
+    # 自检先于单实例锁和配置初始化，既避免被已运行实例短路，也不读取账户或修改启动项。
+    if "--smoke-test" in sys.argv:
+        return _smoke_test()
     instance_handle = _acquire_single_instance()
     if instance_handle is None:
         from ui.i18n import startup_running_message

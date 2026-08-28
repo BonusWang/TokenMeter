@@ -4,6 +4,21 @@ import main
 from core.autostart import AutostartError
 
 
+def test_smoke_mode_bypasses_accounts_single_instance_and_autostart():
+    with (
+        patch.object(main.sys, "argv", ["TokenMeter.exe", "--smoke-test"]),
+        patch.object(main, "_smoke_test", return_value=0) as smoke,
+        patch.object(main, "_acquire_single_instance") as acquire,
+        patch.object(main.config_manager, "initialize") as initialize,
+        patch.object(main, "sync_autostart") as autostart,
+    ):
+        assert main.main() == 0
+    smoke.assert_called_once_with()
+    acquire.assert_not_called()
+    initialize.assert_not_called()
+    autostart.assert_not_called()
+
+
 def test_app_passes_accent_sync_preference_to_theme_controller():
     for enabled in (True, False):
         values = main.config_manager.validate_config({"UI_SYNC_ACCENT_COLOR": enabled})
@@ -18,6 +33,13 @@ def test_app_passes_accent_sync_preference_to_theme_controller():
         assert configure.call_args.kwargs["light_accent"] == values["UI_LIGHT_ACCENT_COLOR"]
         assert configure.call_args.kwargs["dark_accent"] == values["UI_DARK_ACCENT_COLOR"]
 
+
+def test_smoke_mode_preserves_failure_exit_code():
+    with (
+        patch.object(main.sys, "argv", ["TokenMeter.exe", "--smoke-test"]),
+        patch.object(main, "_smoke_test", return_value=1),
+    ):
+        assert main.main() == 1
 
 
 def test_second_instance_exits_before_runtime_initialization():

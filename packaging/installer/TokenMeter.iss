@@ -39,7 +39,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; The build output never contains user data; the exclusion adds defense in depth.
-Source: "..\..\dist\TokenMeter\*"; DestDir: "{app}"; Excludes: "data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 桌宠只通过独立扩展附件安装；即使构建目录残留旧 pet，也不能带入主安装包。
+Source: "..\..\dist\TokenMeter\*"; DestDir: "{app}"; Excludes: "data\*,pet\*,_internal\pet\*,_internal\assets\pets\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; 旧试用包误带入了第三方 ICU。普通覆盖安装不会删除遗留 DLL，必须清理这些精确路径，不能触碰 data。
+Type: files; Name: "{app}\_internal\icuuc.dll"
+Type: files; Name: "{app}\_internal\icuin.dll"
+Type: files; Name: "{app}\_internal\icu.dll"
+Type: files; Name: "{app}\_internal\icudt78.dll"
 
 [Icons]
 Name: "{userdesktop}\TokenMeter"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

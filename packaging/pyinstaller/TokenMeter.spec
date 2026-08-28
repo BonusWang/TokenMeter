@@ -59,11 +59,15 @@ unused_qt_prefixes = (
     "PySide6\\plugins\\platforms\\qminimal.dll",
     "PySide6\\plugins\\platforms\\qoffscreen.dll",
 )
+# Qt6Core 使用 Windows 自带的 ICU C 接口；Poppler 同名 DLL 的导出带版本后缀，会导致 WinError 127。
+system_icu_names = {"icu.dll", "icuuc.dll", "icuin.dll"}
 a.binaries = [
     item for item in a.binaries if not item[0].replace("/", "\\").startswith(unused_qt_prefixes)
+    and item[0].replace("\\", "/").rsplit("/", 1)[-1].lower() not in system_icu_names
 ]
 a.datas = [
     item for item in a.datas if not item[0].replace("/", "\\").startswith(unused_qt_prefixes)
+    and item[0].replace("\\", "/").rsplit("/", 1)[-1].lower() not in system_icu_names
 ]
 # 标准按钮和颜色选择器也要跟随手动语言；发布包不能依赖开发机上的翻译文件。
 translations = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))

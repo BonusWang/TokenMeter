@@ -28,6 +28,7 @@ from api.providers import PROVIDERS, configured_provider_ids
 from api.providers.base import FetchError
 from api.providers.mimo import MiMoProvider
 from config import runtime as config_manager
+from core import pet_extension
 from core.identity import APP_DISPLAY_NAME
 from data.store import PerProviderData, TokenData
 from ui.formatting import format_codex_reset_time, format_money, format_reset_countdown
@@ -39,8 +40,9 @@ from ui.geometry import (
 )
 from ui.i18n import bind_text, tr
 from ui.qt_ball import FloatingUsageBall
-from ui.qt_theme import theme_controller
+from ui.qt_theme import current_theme, theme_controller
 from ui.qt_update import AppUpdateController
+from ui.vpet_host import VPetHost, usage_message
 
 if TYPE_CHECKING:
     from ui.qt_panel import MainPanel
@@ -197,6 +199,12 @@ class FloatingWidget(QWidget):
         self._provider_last_started: dict[str, float] = {}
         self._provider_task_started: dict[str, float] = {}
         self._closed = False
+        self._vpet = VPetHost(self)
+        self._vpet_updating = False
+        self._vpet.ready.connect(self._on_vpet_ready)
+        self._vpet.failed.connect(self._on_vpet_failed)
+        self._vpet.action_requested.connect(self._on_vpet_action)
+        QApplication.instance().aboutToQuit.connect(self._vpet.stop)
         self._auth_expired_providers: set[str] = set()
         self._auth_notified_providers: set[str] = set()
         self._auth_expired_provider_id: str | None = None
@@ -293,6 +301,69 @@ class FloatingWidget(QWidget):
         self._update_controller.schedule_startup_check()
         self._reschedule_refresh()
         self.refresh()
+
+        self._sync_vpet()
+
+    def _sync_vpet(self) -> None:
+        if self._closed or self._vpet_updating:
+            return
+        # 启动也检查安装状态，防止旧的启用配置绕过设置页限制并自动调用本地开发宿主。
+        if config_manager.get("VPET_ENABLED", False) and pet_extension.installed_manifest() is not None:
+            self._vpet.start(config_manager.CONFIG_DIR / "vpet")
+        else:
+            was_active = self._vpet.active
+            self._vpet.stop()
+            if was_active and not self._expanded:
+                self.show()
+
+    def _pause_vpet_update(self) -> None:
+        # 自动保存也会同步桌宠；更新期间必须禁止重启，避免 Windows 文件占用和替换竞态。
+        self._vpet_updating = True
+        self._vpet.stop()
+        if not self._expanded and not self._closed:
+            self.show()
+
+    def _resume_vpet_update(self) -> None:
+        self._vpet_updating = False
+        self._sync_vpet()
+
+    def _on_vpet_ready(self) -> None:
+        if not self._expanded:
+            self.hide()
+        self._apply_update()
+
+    def _on_vpet_failed(self, message: str) -> None:
+        if self._closed:
+            return
+        config_manager.logger().warning("VPet: %s", message)
+        self._set_theme_feedback(message, "danger")
+        if not self._expanded:
+            self.show()
+        if self.tray is not None:
+            self.tray.showMessage(APP_DISPLAY_NAME, message, QSystemTrayIcon.MessageIcon.Warning, 6000)
+
+    def _on_vpet_action(self, action: str) -> None:
+        if self._closed:
+            return
+        if action == "open_panel":
+            self._vpet.set_visible(True)
+            self.expand_panel()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        elif action == "open_settings":
+            self.open_settings()
+        elif action == "disable_pet":
+            try:
+                config_manager.save_config({"VPET_ENABLED": False})
+            except Exception:
+                config_manager.logger().exception("VPet preference could not be saved")
+                return
+            self._sync_vpet()
+            if self._settings_window is not None:
+                self._settings_window.vpet_check.setChecked(False)
+        elif action == "quit":
+            self.close()
 
     def _connect_ui(self) -> None:
         self.ball.pressed.connect(lambda point: self._start_drag(point, "ball"))
@@ -422,6 +493,7 @@ class FloatingWidget(QWidget):
 
     def _on_theme_state_changed(self, mode: str, resolved: str) -> None:
         self._sync_theme_controls(mode, resolved)
+        self._sync_vpet_usage()
 
     def _sync_theme_controls(self, mode: str, resolved: str) -> None:
         sync_panel = getattr(self.panel, "set_theme_mode", None)
@@ -649,6 +721,8 @@ class FloatingWidget(QWidget):
         finally:
             self._transitioning = False
         self._reschedule_refresh()
+        if self._vpet.active:
+            self.hide()
 
     def event(self, event) -> bool:
         if (
@@ -1016,6 +1090,8 @@ class FloatingWidget(QWidget):
                 embedded=True,
             )
             self._settings_window.finished.connect(panel.show_overview)
+            self._settings_window.pet_update_started.connect(self._pause_vpet_update)
+            self._settings_window.pet_update_finished.connect(self._resume_vpet_update)
             panel.settings_back_button.clicked.connect(self._settings_window.reject)
             self._settings_window.save_state_changed.connect(panel.set_settings_save_status)
             self._settings_window.theme_requested.connect(self._request_theme_change)
@@ -1038,6 +1114,7 @@ class FloatingWidget(QWidget):
 
     def _on_config_saved(self) -> None:
         config_manager.load_config()
+        self._sync_vpet()
         # 设置保存后允许所有失效 Provider 各验证一次；验证成功后恢复定时采集，
         # 仍然失效则只重新进入一次通知周期。
         self._auth_expired_providers.clear()
@@ -1396,7 +1473,27 @@ class FloatingWidget(QWidget):
         self._auth_expired_provider_id = None
         self.open_settings(provider_id=provider_id, start_cookie_acquisition=True)
 
+    def _sync_vpet_usage(self) -> None:
+        if self._vpet.active:
+            message = usage_message(
+                self._data, self._refreshing, str(config_manager.get("ACTIVE_PROVIDER", "")),
+                self._pricing_state.is_peak if self._pricing_state is not None else None,
+            )
+            theme = current_theme()
+            # 仅发送绘制需要的颜色，不序列化主题控制器或配置；复用球体的水面色和峰时色规则。
+            message["theme"] = {
+                "accent": theme.accent,
+                "accent_hover": theme.accent_hover,
+                "water_top": FloatingUsageBall._water_top_color(theme).name(),
+                "water_deep": QColor(theme.accent).darker(138).name(),
+                "water_back": theme.heat[3] if theme.name == "light" else theme.accent_hover,
+                "peak": "#FFB000" if theme.name == "light" else theme.warning,
+                "on_accent": theme.on_accent,
+            }
+            self._vpet.update_usage(message)
+
     def _apply_update(self) -> None:
+        self._sync_vpet_usage()
         loading = self._refreshing and self._data.last_success_at is None
         provider_id = (
             self._data.per_provider[0].provider_id if self._data.per_provider else ""
@@ -1481,6 +1578,7 @@ class FloatingWidget(QWidget):
             if self.panel is not None:
                 self.panel.set_pricing_state(False)
             self.ball.set_peak_highlight(False)
+            self._sync_vpet_usage()
             return
 
         previous = self._pricing_state
@@ -1491,6 +1589,8 @@ class FloatingWidget(QWidget):
                 True, current.is_peak, current.label, current.tooltip
             )
         self.ball.set_peak_highlight(current.is_peak)
+        # 沿用现有边界定时器切换云朵描边，不等下一次账户刷新，也不为桌宠增加轮询。
+        self._sync_vpet_usage()
         if (
             notify_transition
             and previous is not None
@@ -1526,6 +1626,12 @@ class FloatingWidget(QWidget):
         self._refresh_timer.start(configured)
 
     def set_visible_from_tray(self) -> None:
+        if self._vpet.active:
+            visible = not self._vpet.visible
+            self._vpet.set_visible(visible)
+            if not visible:
+                self.hide()
+            return
         # 托盘点击时：如果处于贴边隐藏状态，先完整恢复显示
         if self._edge_snapped and not self._expanded:
             self._edge_unsnap()
@@ -1570,6 +1676,7 @@ class FloatingWidget(QWidget):
             x, y = self.x(), self.y()
         config_manager.save_widget_position(x, y)
         self._closed = True
+        self._vpet.stop()
         self._refresh_timer.stop()
         self._background_refresh_timer.stop()
         self._pricing_timer.stop()

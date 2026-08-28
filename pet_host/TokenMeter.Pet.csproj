@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- 随包发布时固定当前 .NET 8 安全补丁，避免旧 SDK 自动带入过期运行时。 -->
+    <RuntimeFrameworkVersion Condition="'$(SelfContained)' == 'true'">8.0.30</RuntimeFrameworkVersion>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>TokenMeter.Pet</AssemblyName>
+    <!-- 核心源码随本仓库维护，避免构建使用下载缓存而遗漏贡献者的修改。 -->
+    <VPetSourceRoot Condition="'$(VPetSourceRoot)' == ''">$(MSBuildThisFileDirectory)..\third_party\VPet</VPetSourceRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(VPetSourceRoot)\VPet-Simulator.Core\VPet-Simulator.Core.csproj" />
+  </ItemGroup>
+</Project>
