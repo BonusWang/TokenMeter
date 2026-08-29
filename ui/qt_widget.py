@@ -20,10 +20,18 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QPalette, QRegion
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QGuiApplication,
+    QPainterPath,
+    QPalette,
+    QRegion,
+)
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMenu, QSystemTrayIcon, QWidget
 
-from api.aggregator import AccountQuota, fetch_all_accounts, tensest_window
+from api.aggregator import AccountQuota, fetch_all_accounts, summarize_by_provider
 from api.deepseek_pricing import BEIJING_TIMEZONE, PricingState, pricing_state
 from api.providers import PROVIDERS, configured_provider_ids
 from api.providers.base import FetchError
@@ -42,6 +50,7 @@ from ui.geometry import (
 )
 from ui.i18n import bind_text, tr
 from ui.qt_ball import FloatingUsageBall
+from ui.qt_float_card import CARD_RADIUS, FloatingUsageCard
 from ui.qt_theme import current_theme, theme_controller
 from ui.qt_update import AppUpdateController
 from ui.vpet_host import VPetHost, usage_message
@@ -307,7 +316,11 @@ class FloatingWidget(QWidget):
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
-        self.ball = FloatingUsageBall(self._compact_size())
+        if ACCOUNTS_MODE:
+            # 白名单多账号：紧凑态用分组聚合卡片（王总拍板）；液面球保留给非白名单单账号路径。
+            self.ball = FloatingUsageCard()
+        else:
+            self.ball = FloatingUsageBall(self._compact_size())
         # 图表面板会加载 pyqtgraph/NumPy；悬浮球常驻时延迟创建可显著降低基线内存。
         self.panel: MainPanel | None = None
         self._layout.addWidget(self.ball, 0, Qt.AlignmentFlag.AlignTop)
@@ -403,10 +416,13 @@ class FloatingWidget(QWidget):
             self.close()
 
     def _connect_ui(self) -> None:
+        # 球与卡片共用 pressed/dragged/released 契约（点击无拖拽 = 展开/收起面板）。
         self.ball.pressed.connect(lambda point: self._start_drag(point, "ball"))
         self.ball.dragged.connect(self._move_drag)
         self.ball.released.connect(self._end_drag)
-        self.ball.resize_requested.connect(self._resize_ball_by_wheel)
+        if not ACCOUNTS_MODE:
+            # 滚轮缩放是液面球专属交互；卡片按内容自适应，不接缩放。
+            self.ball.resize_requested.connect(self._resize_ball_by_wheel)
 
     def _ensure_panel(self) -> MainPanel:
         if self.panel is not None:
@@ -564,6 +580,28 @@ class FloatingWidget(QWidget):
             )
         return self._ball_size
 
+    def _compact_window_size(self) -> tuple[int, int]:
+        """紧凑态窗口宽高；球为正方形，白名单卡片宽高不等且随内容自适应。"""
+
+        if ACCOUNTS_MODE and isinstance(self.ball, FloatingUsageCard):
+            return self.ball.width(), self.ball.height()
+        size = self._compact_size()
+        return size, size
+
+    def _sync_compact_window_size(self) -> None:
+        """卡片内容高度变化时同步外层窗口尺寸并重贴圆角遮罩。"""
+
+        if self._expanded or not (
+            ACCOUNTS_MODE and isinstance(self.ball, FloatingUsageCard)
+        ):
+            return
+        width, height = self.ball.width(), self.ball.height()
+        if (self.width(), self.height()) == (width, height):
+            return
+        self.setFixedSize(width, height)
+        self._apply_native_window_shape(compact=True)
+        self._clamp_to_work_area()
+
     def _expanded_size(self) -> tuple[int, int]:
         if not hasattr(self, "_panel_width"):
             saved = config_manager.load_panel_width()
@@ -644,19 +682,19 @@ class FloatingWidget(QWidget):
         self._clamp_to_work_area()
 
     def _show_compact_at_saved_position(self) -> None:
-        size = self._compact_size()
+        width, height = self._compact_window_size()
         screen = QGuiApplication.primaryScreen().availableGeometry()
         saved = config_manager.load_widget_position()
         if saved is None:
-            x = screen.center().x() - size // 2
+            x = screen.center().x() - width // 2
             y = screen.top() + 90
         else:
             work = WorkArea(screen.x(), screen.y(), screen.x() + screen.width(), screen.y() + screen.height())
-            x, y = clamp_window(saved[0], saved[1], size, size, work)
+            x, y = clamp_window(saved[0], saved[1], width, height, work)
         if self.panel is not None:
             self.panel.hide()
         self.ball.show()
-        self.setFixedSize(size, size)
+        self.setFixedSize(width, height)
         self.clearMask()
         self.move(x, y)
         self.show()
@@ -668,9 +706,17 @@ class FloatingWidget(QWidget):
         # setMask 来控制可见区域。直接调用 Win32 容易在
         # devicePixelRatio 非 1 时把整个窗口切到屏幕外。
         if compact:
-            size = self._compact_size()
-            region = QRegion(0, 0, size, size, QRegion.RegionType.Ellipse)
-            self.setMask(region)
+            width, height = self._compact_window_size()
+            if isinstance(self.ball, FloatingUsageCard):
+                # 卡片是圆角矩形；QRegion 没有圆角原语，用路径转多边形近似。
+                path = QPainterPath()
+                path.addRoundedRect(
+                    0.0, 0.0, float(width), float(height),
+                    float(CARD_RADIUS), float(CARD_RADIUS),
+                )
+                self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+            else:
+                self.setMask(QRegion(0, 0, width, height, QRegion.RegionType.Ellipse))
         else:
             self.clearMask()
 
@@ -695,12 +741,14 @@ class FloatingWidget(QWidget):
             return
         self._edge_unsnap()
         self._transitioning = True
-        size = self._compact_size()
+        compact_width, compact_height = self._compact_window_size()
         try:
             panel = self._ensure_panel()
             work = self._work_area()
             geometry = expanded_panel_geometry(
-                (self.x(), self.y(), size, size), self._expanded_size(), work
+                (self.x(), self.y(), compact_width, compact_height),
+                self._expanded_size(),
+                work,
             )
             x, y, width, height, horizontal, vertical = geometry
             self._expanded = True
@@ -738,20 +786,21 @@ class FloatingWidget(QWidget):
             return
         self._transitioning = True
         try:
-            size = self._compact_size()
+            compact_width, compact_height = self._compact_window_size()
             work = self._work_area()
             x, y = compact_geometry(
                 (self.x(), self.y(), self.width(), self.height()),
-                size,
+                compact_width,
                 self._expand_horizontal,
                 self._expand_vertical,
                 work,
+                compact_height=compact_height,
             )
             self._expanded = False
             self._panel_resize_origin = None
             if self.panel is not None:
                 self.panel.hide()
-            self.setFixedSize(size, size)
+            self.setFixedSize(compact_width, compact_height)
             while self._layout.count():
                 self._layout.takeAt(0)
             self._layout.addWidget(self.ball, 0, Qt.AlignmentFlag.AlignTop)
@@ -837,17 +886,17 @@ class FloatingWidget(QWidget):
         self._edge_leave_timer.stop()
         if self._edge_snapped:
             self._edge_unsnap()
-            size = self._compact_size()
+            compact_width, compact_height = self._compact_window_size()
             work = self._work_area()
             x, y = self.x(), self.y()
             if x < work.left:
                 x = work.left
-            elif x + size > work.right:
-                x = work.right - size
+            elif x + compact_width > work.right:
+                x = work.right - compact_width
             if y < work.top:
                 y = work.top
-            elif y + size > work.bottom:
-                y = work.bottom - size
+            elif y + compact_height > work.bottom:
+                y = work.bottom - compact_height
             self.move(x, y)
         self._drag_origin = point
         self._window_origin = self.pos()
@@ -938,9 +987,11 @@ class FloatingWidget(QWidget):
         if self._expanded:
             x, y = clamp_window(self.x(), self.y(), self.width(), self.height(), work)
         else:
-            size = self._compact_size()
+            compact_width, compact_height = self._compact_window_size()
             # 自由拖拽仍需限制在工作区内，避免悬浮球被拖出屏幕后无法找回。
-            x, y = clamp_window(self.x(), self.y(), size, size, work)
+            x, y = clamp_window(
+                self.x(), self.y(), compact_width, compact_height, work
+            )
             config_manager.save_widget_position(x, y)
         self.move(x, y)
 
@@ -961,7 +1012,7 @@ class FloatingWidget(QWidget):
             self._edge_unsnap()
             return False
         work = self._work_area()
-        size = self._compact_size()
+        compact_width, compact_height = self._compact_window_size()
         x, y = self.x(), self.y()
         threshold = 36
 
@@ -970,7 +1021,7 @@ class FloatingWidget(QWidget):
         # 只要球已经接触/覆盖边缘，就按 0 距离立即吸附。
         def edge_distance(edge_x: int) -> int:
             ball_left = x
-            ball_right = x + size
+            ball_right = x + compact_width
             if ball_left <= edge_x <= ball_right:
                 return 0
             return min(abs(ball_left - edge_x), abs(ball_right - edge_x))
@@ -989,8 +1040,8 @@ class FloatingWidget(QWidget):
         if direction == "left":
             x = work.left
         elif direction == "right":
-            x = work.right - size
-        y = max(work.top, min(y, work.bottom - size))
+            x = work.right - compact_width
+        y = max(work.top, min(y, work.bottom - compact_height))
         self._animate_edge_to(QPoint(x, y), 180)
         config_manager.save_widget_position(x, y)
         self._edge_direction = direction
@@ -1020,11 +1071,11 @@ class FloatingWidget(QWidget):
         ):
             return
         work = self._work_area()
-        size = self._compact_size()
+        compact_width, _compact_height = self._compact_window_size()
         visible_extent = self._edge_visible_extent()
         x, y = self.x(), self.y()
         if self._edge_direction == "left":
-            x = work.left - size + visible_extent
+            x = work.left - compact_width + visible_extent
         elif self._edge_direction == "right":
             x = work.right - visible_extent
         self._edge_hidden = True
@@ -1037,7 +1088,8 @@ class FloatingWidget(QWidget):
         self._edge_hover_check.start(100)
 
     def _edge_visible_extent(self) -> int:
-        return max(12, min(16, round(self._compact_size() * 0.16)))
+        width, _height = self._compact_window_size()
+        return max(12, min(16, round(width * 0.16)))
 
     def _edge_reveal_extent(self) -> int:
         return max(40, self._edge_visible_extent() + 16)
@@ -1053,7 +1105,11 @@ class FloatingWidget(QWidget):
         cursor = QCursor.pos()
         work = self._work_area()
         reveal_zone = self._edge_reveal_extent()
-        vertical_hit = self.y() - 24 <= cursor.y() <= self.y() + self._compact_size() + 24
+        vertical_hit = (
+            self.y() - 24
+            <= cursor.y()
+            <= self.y() + self._compact_window_size()[1] + 24
+        )
         hit = False
         if self._edge_direction == "left":
             hit = work.left <= cursor.x() <= work.left + reveal_zone and vertical_hit
@@ -1092,11 +1148,11 @@ class FloatingWidget(QWidget):
 
     def _edge_visible_position(self) -> QPoint:
         work = self._work_area()
-        size = self._compact_size()
+        compact_width, _compact_height = self._compact_window_size()
         if self._edge_direction == "left":
             return QPoint(work.left, self.y())
         if self._edge_direction == "right":
-            return QPoint(work.right - size, self.y())
+            return QPoint(work.right - compact_width, self.y())
         return self.pos()
 
     def _edge_restore(self) -> None:
@@ -1373,37 +1429,12 @@ class FloatingWidget(QWidget):
             )
 
     def _apply_accounts_update(self) -> None:
-        """多账号视图：悬浮球显示最紧张窗口，tooltip 汇总各账号 5 小时已用%。"""
+        """多账号视图：悬浮卡片按 provider 分组聚合 5 小时与每周剩余（王总拍板口径）。"""
 
         accounts = self._accounts
-        loading = self._accounts_in_flight and self._accounts_last_success is None
-        primary = tensest_window(accounts)
-        if primary is None:
-            if accounts or loading:
-                self.ball.set_quota_state(
-                    None,
-                    "正在更新额度" if loading else "暂无可用账号",
-                    "多账号",
-                )
-            else:
-                self.ball.clear_quota_state()
-        else:
-            tooltips = []
-            for account in accounts:
-                if account.error:
-                    continue
-                five_hour = next(
-                    (w for w in account.windows if w.id == "five_hour"), None
-                )
-                if five_hour is not None:
-                    label = account.label or account.provider_name
-                    tooltips.append(f"{label} {five_hour.used_percent:.0f}%")
-            self.ball.set_quota_state(
-                None if loading else 100 - primary.used_percent,
-                "正在更新额度" if loading else format_reset_countdown(primary.resets_at),
-                primary.title,
-                tooltip=" · ".join(tooltips) or None,
-            )
+        loading = bool(self._accounts_in_flight and self._accounts_last_success is None)
+        self.ball.set_state(summarize_by_provider(accounts), loading=loading)
+        self._sync_compact_window_size()
         if self.panel is not None and self._expanded:
             self.panel.set_accounts(
                 accounts,
@@ -1632,6 +1663,10 @@ class FloatingWidget(QWidget):
             self._vpet.update_usage(message)
 
     def _apply_update(self) -> None:
+        if ACCOUNTS_MODE:
+            # 多账号视图没有单账号数据管线（_data 不再更新）；
+            # 拦住 vpet 就绪/旧回调把球接口打到悬浮卡片上。
+            return
         self._sync_vpet_usage()
         loading = self._refreshing and self._data.last_success_at is None
         provider_id = (
@@ -1719,7 +1754,9 @@ class FloatingWidget(QWidget):
             self._pricing_state = None
             if self.panel is not None:
                 self.panel.set_pricing_state(False)
-            self.ball.set_peak_highlight(False)
+            if not ACCOUNTS_MODE:
+                # 峰价云朵描边是液面球交互；卡片没有该接口。
+                self.ball.set_peak_highlight(False)
             self._sync_vpet_usage()
             return
 
@@ -1730,7 +1767,8 @@ class FloatingWidget(QWidget):
             self.panel.set_pricing_state(
                 True, current.is_peak, current.label, current.tooltip
             )
-        self.ball.set_peak_highlight(current.is_peak)
+        if not ACCOUNTS_MODE:
+            self.ball.set_peak_highlight(current.is_peak)
         # 沿用现有边界定时器切换云朵描边，不等下一次账户刷新，也不为桌宠增加轮询。
         self._sync_vpet_usage()
         if (
@@ -1793,14 +1831,15 @@ class FloatingWidget(QWidget):
         if self._panel_width_save_timer.isActive():
             self._panel_width_save_timer.stop()
             self._save_panel_width()
-        size = self._compact_size()
+        compact_width, compact_height = self._compact_window_size()
         if self._expanded:
             x, y = compact_geometry(
                 (self.x(), self.y(), self.width(), self.height()),
-                size,
+                compact_width,
                 self._expand_horizontal,
                 self._expand_vertical,
                 self._work_area(),
+                compact_height=compact_height,
             )
         elif self._edge_snapped:
             # 贴边隐藏时不要保存隐藏坐标；改为保存边缘的"边缘完整显示位置"
@@ -1808,12 +1847,12 @@ class FloatingWidget(QWidget):
             x, y = self.x(), self.y()
             if x < work.left:
                 x = work.left
-            elif x + size > work.right:
-                x = work.right - size
+            elif x + compact_width > work.right:
+                x = work.right - compact_width
             if y < work.top:
                 y = work.top
-            elif y + size > work.bottom:
-                y = work.bottom - size
+            elif y + compact_height > work.bottom:
+                y = work.bottom - compact_height
         else:
             x, y = self.x(), self.y()
         config_manager.save_widget_position(x, y)

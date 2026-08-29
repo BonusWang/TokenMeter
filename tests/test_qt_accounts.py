@@ -8,12 +8,14 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint
+from PySide6.QtWidgets import QApplication, QWidget
 
 from api.aggregator import AccountQuota
 from api.providers.base import QuotaWindow
 from ui.formatting import format_weekly_reset_date
 from ui.qt_ball import FloatingUsageBall
+from ui.qt_float_card import FloatingUsageCard
 from ui.qt_panel import AccountCard, MainPanel
 from ui.qt_theme import current_theme
 
@@ -140,19 +142,21 @@ def test_window_without_reset_time_hides_reset_label():
     assert block.reset_label.isHidden()
 
 
-def test_ball_prefers_tensest_window_and_tooltip_lists_all_accounts():
-    ball = FloatingUsageBall(88)
-    ball.set_quota_state(
-        43.0,
-        "1 小时 49 分钟后重置",
-        "5小时",
-        tooltip="智谱1 57% · 智谱2 26% · MiniMax 4%",
-    )
-    assert ball._quota_remaining == 43.0
-    assert ball.toolTip() == "智谱1 57% · 智谱2 26% · MiniMax 4%"
+def test_show_overview_keeps_provider_combo_hidden_in_accounts_mode():
+    """白名单模式下从设置页返回概览，旧单账号快速切换下拉不得复活。"""
+
+    panel = MainPanel()
+    assert panel.provider_quick_combo.isHidden()
+    settings = QWidget()
+    for _ in range(2):
+        panel.show_settings(settings)
+        panel.show_overview()
+        assert panel.provider_quick_combo.isHidden()
 
 
-def test_widget_accounts_update_drives_ball_from_all_accounts():
+def test_widget_accounts_update_drives_card_groups():
+    """白名单模式紧凑态是分组卡片：两组、徽章、聚合数值与 tooltip。"""
+
     from ui.qt_widget import FloatingWidget
 
     with patch("ui.qt_widget.FloatingWidget.refresh"):
@@ -160,16 +164,29 @@ def test_widget_accounts_update_drives_ball_from_all_accounts():
     widget._accounts = [
         make_account("智谱1", used=57.0),
         make_account("智谱2", used=26.0),
-        make_account("MiniMax主", provider_id="minimax", provider_name="MiniMax", used=4.0),
+        make_account("MiniMax主", provider_id="minimax", provider_name="MiniMax", used=4.0, weekly_used=1.5),
     ]
     widget._accounts_last_success = datetime.now()
     widget._apply_accounts_update()
 
-    # 最紧张的窗口是智谱1 的 five_hour（已用 57% → 剩余 43）。
-    assert widget.ball._quota_remaining == 43.0
-    assert "智谱1 57%" in widget.ball.toolTip()
-    assert "智谱2 26%" in widget.ball.toolTip()
-    assert "MiniMax主 4%" in widget.ball.toolTip()
+    assert isinstance(widget.ball, FloatingUsageCard)
+    card = widget.ball
+    assert len(card._sections) == 2
+    zhipu = card._sections[0]
+    # 5 小时跨 2 个智谱账号平均剩余 (43+74)/2=58.5→.0f 显示 58%。
+    assert zhipu._rows["five_hour"]._percent_label.text() == "58%"
+    assert zhipu._badge.text() == "2 账号"
+    # 每周两个智谱账号均 90→90%；MiniMax 单账号一组 (96, 98.5→98%)。
+    assert zhipu._rows["weekly"]._percent_label.text() == "90%"
+    assert card._sections[1]._rows["five_hour"]._percent_label.text() == "96%"
+    assert card._sections[1]._badge.text() == "1 账号"
+
+    tooltip = card.toolTip()
+    assert "Zhipu GLM" in tooltip
+    assert "智谱1 57%" in tooltip
+    assert "智谱2 26%" in tooltip
+    assert "MiniMax主 4%" in tooltip
+    assert "重置" in tooltip
     widget._closed = True
     widget.hide()
 
@@ -184,10 +201,78 @@ def test_widget_accounts_update_all_error_shows_unavailable_state():
         make_account("MiniMax主", provider_id="minimax", provider_name="MiniMax", error="失效"),
     ]
     widget._apply_accounts_update()
-    assert widget.ball._quota_mode
-    assert widget.ball._quota_remaining is None
+    assert widget.ball._placeholder_label.text() == "暂无可用账号"
+    assert widget.ball.toolTip() == "暂无可用账号"
     widget._closed = True
     widget.hide()
+
+
+def test_widget_accounts_update_card_aggregates_not_single_account():
+    """卡片必须显示分组聚合值，不是单个最紧张账号的数值（王总：43% 不对）。"""
+
+    from ui.qt_widget import FloatingWidget
+
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+    widget._accounts = [
+        make_account("智谱1", used=50.0),
+        make_account("智谱2", used=20.0, weekly_used=80.0),
+    ]
+    widget._accounts_last_success = datetime.now()
+    widget._apply_accounts_update()
+
+    # 旧实现取智谱2 每周（剩余 20）；聚合口径应为 5 小时 (50+80)/2=65、每周 (90+20)/2=55。
+    card = widget.ball
+    assert card._sections[0]._rows["five_hour"]._percent_label.text() == "65%"
+    assert card._sections[0]._rows["weekly"]._percent_label.text() == "55%"
+    widget._closed = True
+    widget.hide()
+
+
+def test_widget_accounts_update_resizes_compact_window_to_card():
+    """紧凑窗口尺寸跟随卡片宽高，不再受球的方形尺寸约束。"""
+
+    from ui.qt_widget import FloatingWidget
+
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+    widget._accounts = [
+        make_account("智谱1", used=57.0),
+        make_account(
+            "MiniMax主", provider_id="minimax", provider_name="MiniMax", used=4.0
+        ),
+    ]
+    widget._accounts_last_success = datetime.now()
+    widget._apply_accounts_update()
+
+    card = widget.ball
+    assert (widget.width(), widget.height()) == (card.width(), card.height())
+    # 圆角矩形遮罩：中心在遮罩内、直角边角在外（与球的椭圆遮罩同样不含 (0,0)）。
+    assert widget.mask().contains(card.rect().center())
+    assert not widget.mask().contains(QPoint(0, 0))
+    widget._closed = True
+    widget.hide()
+
+
+def test_whitelist_mode_replaces_ball_with_card_and_keeps_ball_for_legacy(monkeypatch):
+    """白名单模式实例化卡片且不再实例化球；非白名单路径球不回归。"""
+
+    import ui.qt_widget as qt_widget_module
+    from ui.qt_widget import FloatingWidget
+
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        widget = FloatingWidget()
+    assert isinstance(widget.ball, FloatingUsageCard)
+    assert not isinstance(widget.ball, FloatingUsageBall)
+    widget._closed = True
+    widget.hide()
+
+    monkeypatch.setattr(qt_widget_module, "ACCOUNTS_MODE", False)
+    with patch("ui.qt_widget.FloatingWidget.refresh"):
+        legacy = FloatingWidget()
+    assert isinstance(legacy.ball, FloatingUsageBall)
+    legacy._closed = True
+    legacy.hide()
 
 
 def test_accounts_view_strings_registered_for_all_languages():

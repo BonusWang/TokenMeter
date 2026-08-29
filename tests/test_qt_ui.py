@@ -814,7 +814,9 @@ def test_codex_reset_time_uses_shanghai_month_day_hour_and_minute():
     assert format_codex_reset_time(None) == "重置时间未知"
 
 
-def test_codex_ball_never_falls_back_to_currency_when_quota_is_unavailable():
+def test_codex_ball_never_falls_back_to_currency_when_quota_is_unavailable(monkeypatch):
+    # 液面球属非白名单单账号路径；白名单模式下紧凑态是悬浮卡片。
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     data = TokenData(
         status="partial",
         per_provider=[PerProviderData("codex", "Codex", status="partial")],
@@ -834,7 +836,8 @@ def test_codex_ball_never_falls_back_to_currency_when_quota_is_unavailable():
     widget.hide()
 
 
-def test_codex_ball_uses_remaining_quota_and_compact_reset_time():
+def test_codex_ball_uses_remaining_quota_and_compact_reset_time(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     reset = datetime(2026, 8, 20, 3, 58, tzinfo=timezone.utc)
     window = QuotaWindow("codex-weekly", "每周额度", 25, resets_at=reset)
     data = TokenData(
@@ -864,7 +867,8 @@ def test_codex_ball_uses_remaining_quota_and_compact_reset_time():
     widget.hide()
 
 
-def test_cursor_ball_reuses_quota_mode_for_success_and_unavailable_states():
+def test_cursor_ball_reuses_quota_mode_for_success_and_unavailable_states(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     reset = datetime.now(timezone.utc) + timedelta(days=12)
     window = QuotaWindow("cursor-monthly", "每月额度", 42, resets_at=reset)
     data = TokenData(
@@ -1518,7 +1522,8 @@ def test_minute_chart_model_tooltip_stays_single_line_and_keeps_cost_visible():
     chart.close()
 
 
-def test_nayuto_reuses_amount_ball_and_exact_minute_ui_with_usd_precision():
+def test_nayuto_reuses_amount_ball_and_exact_minute_ui_with_usd_precision(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     data = TokenData(
         currency="USD",
         today_cost_cny=0.0861,
@@ -2235,7 +2240,8 @@ def test_expanded_window_hides_ball_and_uses_compact_panel_size():
         APP.processEvents()
         assert widget.ball.isVisible()
         assert widget.panel.isHidden()
-        assert widget.mask().contains(QPoint(60, 60))
+        # 紧凑遮罩无论球（椭圆）还是卡片（圆角矩形）都含中心、不含直角边角。
+        assert widget.mask().contains(widget.ball.rect().center())
         assert not widget.mask().contains(QPoint(0, 0))
         widget._closed = True
         widget.hide()
@@ -2582,7 +2588,7 @@ def test_panel_resizes_in_settings_without_refresh_and_restores_after_collapse(t
         settings.reject()
         assert widget.width() == 540
         widget.collapse_panel()
-        assert widget.width() == widget._compact_size()
+        assert widget.width() == widget.ball.width()
         assert all(handle.isHidden() for handle in widget._panel_resize_handles)
         widget.expand_panel()
         assert widget.width() == 540
@@ -2761,7 +2767,8 @@ def test_settings_deactivation_follows_panel_preference(auto_collapse):
                 assert widget.panel.content_stack.currentIndex() == 0
                 widget.expand_panel()
                 assert widget.panel.isVisible()
-                assert widget.panel.provider_quick_combo.isVisible()
+                # 多账号白名单模式下，旧单账号快速切换下拉保持退场，不得随概览复活。
+                assert widget.panel.provider_quick_combo.isHidden()
                 assert settings.isHidden()
                 assert widget.panel.content_stack.currentIndex() == 0
             else:
@@ -2841,7 +2848,8 @@ def test_settings_provider_dropdown_keeps_panel_open():
             widget.hide()
 
 
-def test_compact_ball_uses_smaller_size_and_keeps_free_drag_position():
+def test_compact_ball_uses_smaller_size_and_keeps_free_drag_position(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     with (
         patch("ui.qt_widget.FloatingWidget.refresh"),
         patch("ui.qt_widget.config_manager.load_widget_size", return_value=None),
@@ -2921,7 +2929,8 @@ def test_ball_wheel_resize_emits_vertical_steps_and_keeps_corner_drag_behavior()
     ball.close()
 
 
-def test_ball_wheel_resize_clamps_size_and_window_to_work_area():
+def test_ball_wheel_resize_clamps_size_and_window_to_work_area(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     with (
         patch("ui.qt_widget.FloatingWidget.refresh"),
         patch("ui.qt_widget.config_manager.load_widget_size", return_value=None),
@@ -2963,7 +2972,8 @@ def test_ball_wheel_resize_clamps_size_and_window_to_work_area():
     widget.hide()
 
 
-def test_compact_ball_restores_saved_resize_state():
+def test_compact_ball_restores_saved_resize_state(monkeypatch):
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     with (
         patch("ui.qt_widget.FloatingWidget.refresh"),
         patch("ui.qt_widget.config_manager.load_widget_size", return_value=104),
@@ -3100,8 +3110,10 @@ def test_edge_snap_uses_one_eased_animation_and_delayed_hide():
 )
 @pytest.mark.parametrize("direction", ("left", "right"))
 def test_edge_hide_uses_size_aware_visible_extent_without_fading(
-    size: int, visible_extent: int, direction: str
+    size: int, visible_extent: int, direction: str, monkeypatch
 ) -> None:
+    # 贴边可见条宽度按球尺寸推导，属非白名单路径行为。
+    monkeypatch.setattr("ui.qt_widget.ACCOUNTS_MODE", False)
     with (
         patch("ui.qt_widget.FloatingWidget.refresh"),
         patch("ui.qt_widget.config_manager.load_widget_size", return_value=size),

@@ -32,7 +32,16 @@
 
 TokenMeter 是一款轻量级 Windows 桌面 AI 用量监控工具。它显示 Codex 与 Cursor 订阅额度、剩余比例和重置倒计时，并为 DeepSeek、Xiaomi MiMo 与 NayutoAI 展示 Token、费用、余额和历史趋势。
 
-当前体验版：[v1.14.0-beta.1](https://github.com/zensoku142/TokenMeter/releases/tag/v1.14.0-beta.1)，配套桌宠扩展为 [pet-v0.1.0-beta.1](https://github.com/zensoku142/TokenMeter/releases/tag/pet-v0.1.0-beta.1)。两者均为预发布版，稳定版下载入口保持不变。
+> **本 Fork 增强（v1.15.0）**：在上游基础上新增国产 Coding Plan 监控能力——
+>
+> - **智谱 GLM / MiniMax Coding Plan 额度监控**：5 小时 + 每周双窗口，兼容智谱老版套餐与新版积分制（CREDIT_LIMIT）
+> - **多账号同屏**：同一厂商导入多把 Key（如多个智谱账号），悬浮卡片按厂商分组聚合展示平均剩余，无需手工切换
+> - **CCSwitch 一键导入**：`python scripts/import_ccswitch_plans.py` 读取 CCSwitch 数据库导入全部账号凭据（只读、日志打码、可重复执行）
+> - 凭据仅存 Windows 凭据管理器；单账号失败不影响其他账号展示
+>
+> 详见 [release-notes/v1.15.0.md](release-notes/v1.15.0.md)。
+
+当前体验版：[v1.14.0-beta.1](https://github.com/zensoku142/TokenMeter/releases/tag/v1.14.0-beta.1)，配套桌宠扩展为 [pet-v0.1.0-beta.1](https://github.com/zensoku142/TokenMeter/releases/tag/pet-v0.1.0-beta.1)。两者均为预发布版，稳定版下载入口保持不变。本 Fork 当前版本：**v1.15.0**（基于上游 v1.14.0-beta.1）。
 
 ## 功能
 

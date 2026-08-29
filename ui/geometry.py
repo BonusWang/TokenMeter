@@ -128,13 +128,17 @@ def compact_geometry(
     vertical: str,
     work: WorkArea,
     margin: int = 8,
+    compact_height: int | None = None,
 ) -> tuple[int, int]:
+    """按展开锚点计算紧凑态位置；悬浮卡片宽高不等时用 compact_height 指定高度。"""
+
     x, y, width, height = panel
+    restored_height = compact_size if compact_height is None else compact_height
     compact_x = x if horizontal == "right" else x + width - compact_size
-    compact_y = y if vertical == "down" else y + height - compact_size
+    compact_y = y if vertical == "down" else y + height - restored_height
     # 收起时保留原锚点，不再把悬浮球强制吸附到左右边缘。
     return clamp_window(
-        compact_x, compact_y, compact_size, compact_size, work, margin
+        compact_x, compact_y, compact_size, restored_height, work, margin
     )
 
 

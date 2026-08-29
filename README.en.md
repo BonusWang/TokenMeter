@@ -32,6 +32,15 @@
 
 TokenMeter is a lightweight Windows desktop monitor for subscription quotas, token usage, API costs, account balances, and historical trends across Codex, Cursor, DeepSeek, Xiaomi MiMo, and NayutoAI. It stays in the system tray and provides a floating widget plus an expandable detail panel.
 
+> **This fork (v1.15.0)** adds Chinese Coding Plan monitoring on top of upstream:
+>
+> - **Zhipu GLM / MiniMax Coding Plan quotas**: 5-hour + weekly windows; supports both legacy TOKENS_LIMIT plans and the new credit-based (CREDIT_LIMIT) plans
+> - **Multi-account**: import multiple keys per vendor (e.g. several Zhipu accounts); the floating card aggregates average remaining per vendor group - no manual switching
+> - **One-shot import from CCSwitch**: `python scripts/import_ccswitch_plans.py` reads the CCSwitch database and imports all accounts (read-only, masked logs, re-runnable)
+> - Credentials live only in Windows Credential Manager; one failed account never blocks the others
+>
+> See [release-notes/v1.15.0.md](release-notes/v1.15.0.md) (Chinese).
+
 ## Features
 
 - Codex, Cursor, DeepSeek, Xiaomi MiMo, and NayutoAI support with isolated per-provider caches; only the current provider refreshes by default, with optional background providers selected in Settings.

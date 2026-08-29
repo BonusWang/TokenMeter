@@ -186,7 +186,8 @@ def release_info(version=build_release.PET_MANIFEST["version"], **manifest):
                           "a" * 64)
 
 
-def test_pet_download_uses_independent_release_and_verified_asset(tmp_path):
+def test_pet_download_uses_independent_release_and_verified_asset(tmp_path, monkeypatch):
+    monkeypatch.setattr("updater.client.APP_VERSION", "1.15.0-beta.1")
     client = GitHubReleaseClient()
     data = release_payload()
     name = data["assets"][0]["name"]
@@ -203,7 +204,8 @@ def test_pet_download_uses_independent_release_and_verified_asset(tmp_path):
 
 
 @pytest.mark.parametrize("bad_hash", [False, True])
-def test_pet_download_stream_checks_actual_bytes_and_removes_partial_files(tmp_path, bad_hash):
+def test_pet_download_stream_checks_actual_bytes_and_removes_partial_files(tmp_path, bad_hash, monkeypatch):
+    monkeypatch.setattr("updater.client.APP_VERSION", "1.15.0-beta.1")
     client = GitHubReleaseClient()
     data = release_payload()
     name = data["assets"][0]["name"]
@@ -450,7 +452,8 @@ def test_pet_prereleases_only_available_to_preview_app(
         assert client.latest_pet_release().version == expected
 
 
-def test_pet_discovery_pages_past_main_releases_and_supports_cancellation():
+def test_pet_discovery_pages_past_main_releases_and_supports_cancellation(monkeypatch):
+    monkeypatch.setattr("updater.client.APP_VERSION", "1.15.0-beta.1")
     client = GitHubReleaseClient()
     data = release_payload()
     checksums = {pet.PACK_MANIFEST: "b" * 64, data["assets"][0]["name"].lower(): "a" * 64}

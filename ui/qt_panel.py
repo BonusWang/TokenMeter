@@ -3055,7 +3055,9 @@ class MainPanel(QFrame):
         self.content_stack.setCurrentIndex(0)
         self.settings_back_button.hide()
         self.settings_save_status.hide()
-        self.provider_quick_combo.show()
+        if not ACCOUNTS_MODE:
+            # 白名单模式下该下拉保持退场，否则从设置页返回时复活无效的旧单账号切换。
+            self.provider_quick_combo.show()
         self.pricing_badge.setVisible(bool(self.pricing_badge.text()))
         self.settings_button.show()
 

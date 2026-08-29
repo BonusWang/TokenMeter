@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from api.aggregator import AccountQuota, fetch_all_accounts, tensest_window
+from datetime import datetime, timedelta
+
+from api.aggregator import (
+    AccountQuota,
+    aggregate_windows,
+    fetch_all_accounts,
+    group_by_provider,
+    summarize_by_provider,
+    tensest_window,
+)
 from api.providers.base import FetchError, ProviderQuota, QuotaWindow
 
 ZHIPU_BASE = "https://open.bigmodel.cn"
@@ -202,3 +211,166 @@ def test_account_quota_error_only_account_has_no_windows():
     account = AccountQuota("zhipu", "Zhipu GLM", "智谱9", error="未配置 API Key")
     assert account.windows == ()
     assert tensest_window([account]) is None
+
+
+def make_agg_account(
+    label: str,
+    five_hour_used: float | None = 0.0,
+    weekly_used: float | None = None,
+    *,
+    five_hour_reset: datetime | None = None,
+    weekly_reset: datetime | None = None,
+    error: str = "",
+) -> AccountQuota:
+    windows: list[QuotaWindow] = []
+    if not error:
+        if five_hour_used is not None:
+            windows.append(
+                QuotaWindow("five_hour", "5小时", five_hour_used, resets_at=five_hour_reset)
+            )
+        if weekly_used is not None:
+            windows.append(
+                QuotaWindow("weekly", "7天", weekly_used, resets_at=weekly_reset)
+            )
+    return AccountQuota(
+        "zhipu", "Zhipu GLM", label, windows=tuple(windows), error=error
+    )
+
+
+def test_aggregate_windows_averages_remaining_per_window_and_rounds():
+    """同窗口类型跨账号取剩余% 简单平均，round 1 位（43,74,95 → 70.7）。"""
+
+    accounts = [
+        make_agg_account("智谱1", 57.0, 10.0),
+        make_agg_account("智谱2", 26.0, 80.0),
+        make_agg_account("智谱10", 5.0, 55.0),
+    ]
+    aggregates = aggregate_windows(accounts)
+
+    assert set(aggregates) == {"five_hour", "weekly"}
+    five_hour = aggregates["five_hour"]
+    assert five_hour.window_id == "five_hour"
+    assert five_hour.title == "5小时"
+    assert five_hour.remaining_percent == 70.7  # (43 + 74 + 95) / 3 = 70.666…
+    assert five_hour.account_count == 3
+    weekly = aggregates["weekly"]
+    assert weekly.title == "每周"
+    assert weekly.remaining_percent == 51.7  # (90 + 20 + 45) / 3 = 51.666…
+    assert weekly.account_count == 3
+
+
+def test_aggregate_windows_account_without_window_skips_that_window():
+    accounts = [
+        make_agg_account("智谱1", 30.0, weekly_used=None),
+        make_agg_account("智谱2", 10.0, weekly_used=40.0),
+    ]
+    aggregates = aggregate_windows(accounts)
+
+    assert aggregates["five_hour"].account_count == 2
+    assert aggregates["five_hour"].remaining_percent == 80.0  # (70 + 90) / 2
+    # 智谱1 无 weekly 窗口，不参与周聚合。
+    assert aggregates["weekly"].account_count == 1
+    assert aggregates["weekly"].remaining_percent == 60.0
+
+
+def test_aggregate_windows_excludes_error_accounts_and_empty_list():
+    accounts = [
+        make_agg_account("智谱1", 50.0, error="网络异常"),
+        make_agg_account("智谱2", 20.0, weekly_used=80.0),
+    ]
+    aggregates = aggregate_windows(accounts)
+
+    # error 账号即使带窗口也不参与平均。
+    assert aggregates["five_hour"].account_count == 1
+    assert aggregates["five_hour"].remaining_percent == 80.0
+    assert aggregate_windows([]) == {}
+    assert aggregate_windows([make_agg_account("智谱9", 0.0, error="失效")]) == {}
+
+
+def test_aggregate_windows_earliest_reset_picks_minimum():
+    soon = datetime.now() + timedelta(hours=1)
+    late = datetime.now() + timedelta(hours=3)
+    accounts = [
+        make_agg_account("智谱1", 10.0, 10.0, five_hour_reset=late, weekly_reset=None),
+        make_agg_account("智谱2", 20.0, 20.0, five_hour_reset=soon, weekly_reset=None),
+    ]
+    aggregates = aggregate_windows(accounts)
+
+    assert aggregates["five_hour"].earliest_reset == soon
+    assert aggregates["weekly"].earliest_reset is None
+
+
+def test_group_by_provider_keeps_whitelist_order():
+    """分组保持白名单顺序（zhipu→minimax），组内保持自然排序。"""
+
+    accounts = [
+        make_agg_account("智谱1", 57.0, 10.0),
+        AccountQuota("minimax", "MiniMax", "MiniMax主", windows=(
+            QuotaWindow("five_hour", "5小时", 4.0),
+        )),
+        make_agg_account("智谱2", 26.0, 80.0),
+    ]
+    groups = group_by_provider(accounts)
+
+    assert list(groups) == ["zhipu", "minimax"]
+    assert [account.label for account in groups["zhipu"]] == ["智谱1", "智谱2"]
+    assert [account.label for account in groups["minimax"]] == ["MiniMax主"]
+    assert group_by_provider([]) == {}
+
+
+def test_summarize_by_provider_builds_card_groups():
+    """卡片分组汇总：白名单顺序、provider 显示名、账号数、组内窗口聚合。"""
+
+    accounts = [
+        AccountQuota("zhipu", "Zhipu GLM", "智谱1", windows=(
+            QuotaWindow("five_hour", "5小时", 57.0),
+            QuotaWindow("weekly", "7天", 10.0),
+        )),
+        AccountQuota("zhipu", "Zhipu GLM", "智谱2", windows=(
+            QuotaWindow("five_hour", "5小时", 26.0),
+            QuotaWindow("weekly", "7天", 80.0),
+        )),
+        AccountQuota("minimax", "MiniMax", "MiniMax主", windows=(
+            QuotaWindow("five_hour", "5小时", 4.0),
+        )),
+    ]
+    summaries = summarize_by_provider(accounts)
+
+    assert [summary.provider_id for summary in summaries] == ["zhipu", "minimax"]
+    zhipu = summaries[0]
+    assert zhipu.provider_name == "Zhipu GLM"
+    assert zhipu.account_count == 2
+    assert zhipu.windows["five_hour"].remaining_percent == 58.5  # (43 + 74) / 2
+    assert zhipu.windows["weekly"].remaining_percent == 55.0  # (90 + 20) / 2
+    # MiniMax 组内仅 1 账号照常成组展示。
+    minimax = summaries[1]
+    assert minimax.provider_name == "MiniMax"
+    assert minimax.account_count == 1
+    assert minimax.windows["five_hour"].remaining_percent == 96.0
+    assert "weekly" not in minimax.windows
+
+
+def test_summarize_by_provider_error_accounts_count_but_skip_average():
+    """error 账号计入“N 账号”徽章但不参与平均；全 error 组无窗口数据。"""
+
+    accounts = [
+        AccountQuota("zhipu", "Zhipu GLM", "智谱1", error="网络异常"),
+        AccountQuota("zhipu", "Zhipu GLM", "智谱2", windows=(
+            QuotaWindow("five_hour", "5小时", 20.0),
+        )),
+    ]
+    summaries = summarize_by_provider(accounts)
+
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.account_count == 2
+    assert summary.windows["five_hour"].account_count == 1
+    assert summary.windows["five_hour"].remaining_percent == 80.0
+
+    all_error = summarize_by_provider(
+        [AccountQuota("zhipu", "zhipu", "智谱1", error="失效")]
+    )
+    assert all_error[0].account_count == 1
+    assert all_error[0].windows == {}
+    # 异常路径拿不到 provider.name 时回退 provider_id，不显示成空串。
+    assert all_error[0].provider_name == "zhipu"

@@ -120,6 +120,8 @@ class RefreshTests(unittest.TestCase):
             patch("ui.qt_widget.config_manager.get") as get_config,
             patch("ui.qt_widget.config_manager.all_config", return_value={}),
             patch("ui.qt_widget.pricing_state", return_value=peak),
+            # 峰价云朵描边属液面球（非白名单路径）行为；stub 同样按球路径驱动。
+            patch("ui.qt_widget.ACCOUNTS_MODE", False),
         ):
             get_config.side_effect = lambda key, default=None: {
                 "DEEPSEEK_PEAK_PRICING_ENABLED": True,
@@ -153,7 +155,9 @@ class RefreshTests(unittest.TestCase):
             "peak",
             datetime(2026, 7, 15, 12, 0, tzinfo=BEIJING_TIMEZONE),
         )
-        with patch("ui.qt_widget.config_manager.get") as get_config:
+        with patch("ui.qt_widget.config_manager.get") as get_config, patch(
+            "ui.qt_widget.ACCOUNTS_MODE", False
+        ):
             get_config.side_effect = lambda key, default=None: {
                 "DEEPSEEK_PEAK_PRICING_ENABLED": True,
                 "ACTIVE_PROVIDER": "mimo",
